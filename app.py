@@ -347,25 +347,25 @@ def is_sku_valid_for_method(sku, method):
         except (ValueError, TypeError):
             return False, f"SKU {sku} is not available for Applique (APP 36 is 0 or missing)"
     
-    elif method == 'Sublimation':
+    elif method == 'Sublimated Patches':
         sub_50 = row.get('SUB 50', 0)
         try:
             sub_50_val = float(sub_50) if pd.notna(sub_50) and str(sub_50) != '' else 0
             if sub_50_val > 0:
                 return True, ''
-            return False, f"SKU {sku} is not available for Sublimation (SUB 50 is 0 or missing)"
+            return False, f"SKU {sku} is not available for Sublimated Patches (SUB 50 is 0 or missing)"
         except (ValueError, TypeError):
-            return False, f"SKU {sku} is not available for Sublimation (SUB 50 is 0 or missing)"
+            return False, f"SKU {sku} is not available for Sublimated Patches (SUB 50 is 0 or missing)"
     
-    elif method == 'Leather':
+    elif method == 'Leather Patches':
         lth_50 = row.get('LTH 50', 0)
         try:
             lth_50_val = float(lth_50) if pd.notna(lth_50) and str(lth_50) != '' else 0
             if lth_50_val > 0:
                 return True, ''
-            return False, f"SKU {sku} is not available for Leather (LTH 50 is 0 or missing)"
+            return False, f"SKU {sku} is not available for Leather Patches (LTH 50 is 0 or missing)"
         except (ValueError, TypeError):
-            return False, f"SKU {sku} is not available for Leather (LTH 50 is 0 or missing)"
+            return False, f"SKU {sku} is not available for Leather Patches (LTH 50 is 0 or missing)"
     
     # If method not in the list, allow it
     return True, ''
@@ -593,7 +593,7 @@ def calculate_pricing_tier(total_units, method):
             return '36pc'
     elif method == 'Applique':
         return '36pc'  # Only one tier
-    elif method == 'Sublimation' or method == 'Leather':
+    elif method == 'Sublimated Patches' or method == 'Leather Patches':
         return '50pc'  # Only one tier
     else:
         return '36pc'  # Default fallback
@@ -618,9 +618,9 @@ def get_base_price(sku, method, pricing_tier):
         price_col = 'EMB 72' if pricing_tier == '72pc' else 'EMB 36'
     elif method == 'Applique':
         price_col = 'APP 36'
-    elif method == 'Sublimation':
+    elif method == 'Sublimated Patches':
         price_col = 'SUB 50'
-    elif method == 'Leather':
+    elif method == 'Leather Patches':
         price_col = 'LTH 50'
     
     if price_col and price_col in row:
@@ -1304,16 +1304,16 @@ st.session_state.order_data['header']['shipping_city'] = shipping_city
 st.session_state.order_data['header']['shipping_state'] = shipping_state
 st.session_state.order_data['header']['shipping_zip'] = shipping_zip
 
-# Same as Shipping checkbox
+# Billing Address
+st.markdown("### Billing Address")
+
+# Same as Shipping checkbox - moved to be next to Billing Address
 same_as_shipping = st.checkbox(
     "Same as Shipping Address",
     value=st.session_state.order_data['header']['same_as_shipping'],
     key='same_as_shipping_checkbox'
 )
 st.session_state.order_data['header']['same_as_shipping'] = same_as_shipping
-
-# Billing Address
-st.markdown("### Billing Address")
 if same_as_shipping:
     # Display shipping address values when "Same as Shipping" is checked
     st.text_input("Address 1", value=shipping_addr1, key='billing_addr1_display', disabled=True)
@@ -1397,8 +1397,8 @@ else:
     # Decoration Method Selection
     decoration_method = st.radio(
         "Decoration Method",
-        options=['Screenprint', 'Embroidery', 'Applique', 'Sublimation', 'Leather'],
-        index=['Screenprint', 'Embroidery', 'Applique', 'Sublimation', 'Leather'].index(st.session_state.order_data['decoration']['method']) if st.session_state.order_data['decoration']['method'] in ['Screenprint', 'Embroidery', 'Applique', 'Sublimation', 'Leather'] else 0,
+        options=['Screenprint', 'Embroidery', 'Applique', 'Sublimated Patches', 'Leather Patches'],
+        index=['Screenprint', 'Embroidery', 'Applique', 'Sublimated Patches', 'Leather Patches'].index(st.session_state.order_data['decoration']['method']) if st.session_state.order_data['decoration']['method'] in ['Screenprint', 'Embroidery', 'Applique', 'Sublimated Patches', 'Leather Patches'] else 0,
         key='decoration_method_radio',
         horizontal=True
     )
@@ -1703,7 +1703,7 @@ if total_units > 0:
     pricing_tier = calculate_pricing_tier(total_units, current_method)
 else:
     # Default tier based on method
-    if current_method == 'Sublimation' or current_method == 'Leather':
+    if current_method == 'Sublimated Patches' or current_method == 'Leather Patches':
         pricing_tier = '50pc'
     else:
         pricing_tier = '36pc'
@@ -2008,7 +2008,7 @@ if st.session_state.show_order_review and not st.session_state.order_submitted:
         if total_units > 0:
             pricing_tier = calculate_pricing_tier(total_units, current_method)
         else:
-            if current_method == 'Sublimation' or current_method == 'Leather':
+            if current_method == 'Sublimated Patches' or current_method == 'Leather Patches':
                 pricing_tier = '50pc'
             else:
                 pricing_tier = '36pc'
