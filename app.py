@@ -7,6 +7,7 @@ import re
 import uuid
 import requests
 from urllib.parse import quote
+import json
 
 # Page configuration
 st.set_page_config(
@@ -93,6 +94,7 @@ def load_sheet_data(sheet_name):
 products_df = load_sheet_data("Products")
 customers_df = load_sheet_data("Customers")
 salesreps_df = load_sheet_data("SalesReps")
+# Note: Orders are stored in session state for now (can be extended to Google Sheets API)
 
 # Ensure SalesReps has the expected structure if empty
 if salesreps_df.empty:
@@ -445,6 +447,93 @@ def can_rep_view_sheets(rep_name):
                         if value_str in ['true', 'yes', 'y', '1', 'show']:
                             return True
     return False
+
+def save_order_to_sheet(order_data, status='Draft', submission_number=''):
+    """Save order to session state (for persistence - can be extended to Google Sheets API)"""
+    if 'saved_orders' not in st.session_state:
+        st.session_state.saved_orders = []
+    
+    # Convert dates to strings for JSON serialization
+    order_data_copy = {}
+    for key, value in order_data.items():
+        if isinstance(value, dict):
+            order_data_copy[key] = {}
+            for sub_key, sub_value in value.items():
+                if isinstance(sub_value, (date, datetime)):
+                    order_data_copy[key][sub_key] = sub_value.isoformat() if sub_value else None
+                else:
+                    order_data_copy[key][sub_key] = sub_value
+        else:
+            order_data_copy[key] = value
+    
+    order_record = {
+        'OrderID': str(uuid.uuid4())[:8],
+        'SalesRep': order_data['header'].get('sales_rep', ''),
+        'Status': status,  # 'Draft' or 'Submitted'
+        'SubmissionNumber': submission_number,
+        'PONumber': order_data['header'].get('po_number', ''),
+        'Customer': order_data['header'].get('customer', ''),
+        'OrderDate': str(order_data['header'].get('order_date', '')),
+        'ShipDate': str(order_data['header'].get('ship_date', '')),
+        'CreatedDate': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'OrderData': json.dumps(order_data_copy, default=str)  # Store as JSON string
+    }
+    
+    st.session_state.saved_orders.append(order_record)
+    return order_record['OrderID']
+
+def get_orders_for_rep(rep_name, status_filter=None):
+    """Get orders for a specific rep from saved orders"""
+    if 'saved_orders' not in st.session_state:
+        return []
+    
+    rep_clean = str(rep_name).strip()
+    orders = [o for o in st.session_state.saved_orders if str(o.get('SalesRep', '')).strip() == rep_clean]
+    
+    if status_filter:
+        orders = [o for o in orders if o.get('Status', '') == status_filter]
+    
+    # Sort by created date (newest first)
+    orders.sort(key=lambda x: x.get('CreatedDate', ''), reverse=True)
+    return orders
+
+def load_order_by_id(order_id):
+    """Load order data by OrderID and restore date objects"""
+    if 'saved_orders' not in st.session_state:
+        return None
+    
+    for order in st.session_state.saved_orders:
+        if order.get('OrderID') == order_id:
+            try:
+                # Parse order data from JSON string
+                order_data = json.loads(order.get('OrderData', '{}'))
+                
+                # Restore date objects from ISO format strings
+                if 'header' in order_data:
+                    for date_field in ['order_date', 'ship_date', 'drop_dead_date']:
+                        if date_field in order_data['header'] and order_data['header'][date_field]:
+                            date_str = order_data['header'][date_field]
+                            try:
+                                # Try parsing ISO format date string
+                                if isinstance(date_str, str):
+                                    if 'T' in date_str:
+                                        order_data['header'][date_field] = datetime.fromisoformat(date_str.split('T')[0]).date()
+                                    else:
+                                        order_data['header'][date_field] = datetime.strptime(date_str, '%Y-%m-%d').date()
+                            except (ValueError, AttributeError):
+                                pass
+                
+                return {
+                    'order_record': order,
+                    'order_data': order_data
+                }
+            except Exception as e:
+                return {
+                    'order_record': order,
+                    'order_data': None
+                }
+    
+    return None
 
 def get_customers_for_rep(sales_rep):
     """Get list of customers assigned to a sales rep, sorted A-Z"""
@@ -826,13 +915,222 @@ if is_admin:
 # Main App Title
 st.title("👕 Eagle Resort Wear Portal 🦅")
 
-# Conditionally show Google Sheets link based on rep permissions
+# Navigation: My Orders or New Order
 authenticated_rep_name = st.session_state.authenticated_rep
+
+# Initialize view mode
+if 'view_mode' not in st.session_state:
+    st.session_state.view_mode = 'new_order'  # 'new_order' or 'my_orders'
+
+# Navigation buttons
+col_nav1, col_nav2, col_nav3 = st.columns([1, 1, 4])
+with col_nav1:
+    if st.button("📝 New Order", key='nav_new_order'):
+        st.session_state.view_mode = 'new_order'
+        st.session_state.show_order_review = False
+        st.session_state.order_submitted = False
+        st.rerun()
+
+with col_nav2:
+    if st.button("📋 My Orders", key='nav_my_orders'):
+        st.session_state.view_mode = 'my_orders'
+        st.rerun()
+
+# Conditionally show Google Sheets link based on rep permissions
 if authenticated_rep_name and can_rep_view_sheets(authenticated_rep_name):
-    SHEETS_LINK = "https://docs.google.com/spreadsheets/d/14DYELQWKuQefjFEpTaltaS5YHhXeiIhr-QJ327mGwt0/edit?usp=sharing"
-    st.markdown(f"📊 [View/Edit Data Sheets]({SHEETS_LINK})")
+    with col_nav3:
+        SHEETS_LINK = "https://docs.google.com/spreadsheets/d/14DYELQWKuQefjFEpTaltaS5YHhXeiIhr-QJ327mGwt0/edit?usp=sharing"
+        st.markdown(f"📊 [View/Edit Data Sheets]({SHEETS_LINK})")
 
 st.markdown("---")
+
+# My Orders View
+if st.session_state.view_mode == 'my_orders':
+    st.header("📋 My Orders")
+    
+    # Get orders for this rep
+    all_orders = get_orders_for_rep(authenticated_rep_name)
+    submitted_orders = [o for o in all_orders if o.get('Status') == 'Submitted']
+    draft_orders = [o for o in all_orders if o.get('Status') == 'Draft']
+    
+    # Tabs for Submitted and Drafts
+    tab1, tab2 = st.tabs([f"✅ Submitted ({len(submitted_orders)})", f"💾 Drafts ({len(draft_orders)})"])
+    
+    with tab1:
+        if submitted_orders:
+            st.markdown("### Submitted Orders")
+            for order in submitted_orders:
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 2, 1])
+                    with col1:
+                        st.write(f"**PO#:** {order.get('PONumber', 'N/A')} | **Customer:** {order.get('Customer', 'N/A')}")
+                        st.write(f"**Submission #:** {order.get('SubmissionNumber', 'N/A')} | **Order Date:** {order.get('OrderDate', 'N/A')}")
+                    with col2:
+                        st.write(f"**Created:** {order.get('CreatedDate', 'N/A')}")
+                    with col3:
+                        if st.button("👁️ View", key=f"view_submitted_{order.get('OrderID')}"):
+                            st.session_state.viewing_order_id = order.get('OrderID')
+                            st.session_state.view_mode = 'view_order'
+                            st.rerun()
+                    st.markdown("---")
+        else:
+            st.info("No submitted orders yet.")
+    
+    with tab2:
+        if draft_orders:
+            st.markdown("### Draft Orders")
+            for order in draft_orders:
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 2, 1])
+                    with col1:
+                        po_num = order.get('PONumber', 'N/A')
+                        if po_num == '' or po_num == 'N/A':
+                            po_num = 'No PO#'
+                        st.write(f"**PO#:** {po_num} | **Customer:** {order.get('Customer', 'N/A')}")
+                        st.write(f"**Created:** {order.get('CreatedDate', 'N/A')}")
+                    with col2:
+                        st.write(f"**Last Saved:** {order.get('CreatedDate', 'N/A')}")
+                    with col3:
+                        if st.button("✏️ Edit", key=f"edit_draft_{order.get('OrderID')}"):
+                            st.session_state.viewing_order_id = order.get('OrderID')
+                            st.session_state.view_mode = 'edit_order'
+                            st.rerun()
+                    st.markdown("---")
+        else:
+            st.info("No draft orders saved.")
+    
+    st.markdown("---")
+    if st.button("← Back to New Order", key='back_to_new'):
+        st.session_state.view_mode = 'new_order'
+        st.rerun()
+    
+    st.stop()  # Stop here - don't show the order form
+
+# View/Edit Order Mode
+if st.session_state.view_mode in ['view_order', 'edit_order']:
+    viewing_order_id = st.session_state.get('viewing_order_id')
+    if viewing_order_id:
+        loaded_order = load_order_by_id(viewing_order_id)
+        if loaded_order and loaded_order.get('order_record'):
+            order_record = loaded_order['order_record']
+            order_data = loaded_order.get('order_data')
+            
+            st.header(f"{'👁️ View Order' if st.session_state.view_mode == 'view_order' else '✏️ Edit Order'}")
+            st.write(f"**PO#:** {order_record.get('PONumber', 'N/A')} | **Customer:** {order_record.get('Customer', 'N/A')}")
+            st.write(f"**Status:** {order_record.get('Status', 'N/A')} | **Submission #:** {order_record.get('SubmissionNumber', 'N/A')}")
+            st.write(f"**Created:** {order_record.get('CreatedDate', 'N/A')}")
+            
+            if order_data and st.session_state.view_mode == 'edit_order':
+                # Load order data into session state for editing
+                # Restore date objects from ISO format strings
+                if 'header' in order_data:
+                    for date_field in ['order_date', 'ship_date', 'drop_dead_date']:
+                        if date_field in order_data['header'] and order_data['header'][date_field]:
+                            date_val = order_data['header'][date_field]
+                            if isinstance(date_val, str):
+                                try:
+                                    if 'T' in date_val:
+                                        order_data['header'][date_field] = datetime.fromisoformat(date_val.split('T')[0]).date()
+                                    else:
+                                        order_data['header'][date_field] = datetime.strptime(date_val, '%Y-%m-%d').date()
+                                except (ValueError, AttributeError):
+                                    pass
+                
+                st.session_state.order_data = order_data
+                st.success("✅ Order loaded. You can now edit it below.")
+                st.session_state.view_mode = 'new_order'
+                if 'viewing_order_id' in st.session_state:
+                    del st.session_state.viewing_order_id
+                st.rerun()
+            elif order_data and st.session_state.view_mode == 'view_order':
+                # Display order in read-only view (similar to review screen)
+                st.markdown("---")
+                with st.expander("📦 Order Information", expanded=True):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write(f"**Sales Rep:** {order_data['header'].get('sales_rep', 'N/A')}")
+                        st.write(f"**Customer:** {order_data['header'].get('customer', 'N/A')}")
+                        st.write(f"**PO#:** {order_data['header'].get('po_number', 'N/A')}")
+                        st.write(f"**Tax Status:** {order_data['header'].get('tax_status', 'N/A')}")
+                        st.write(f"**Tags:** {order_data['header'].get('tags', 'N/A')}")
+                        st.write(f"**Delivery Method:** {order_data['header'].get('delivery_method', 'N/A')}")
+                    with col2:
+                        order_date = order_data['header'].get('order_date')
+                        ship_date = order_data['header'].get('ship_date')
+                        drop_dead_date = order_data['header'].get('drop_dead_date')
+                        st.write(f"**Order Date:** {order_date if order_date else 'N/A'}")
+                        st.write(f"**Ship Date:** {ship_date if ship_date else 'N/A'}")
+                        st.write(f"**Drop Dead Date:** {drop_dead_date if drop_dead_date else 'N/A'}")
+                
+                with st.expander("📍 Shipping Address"):
+                    st.write(f"**Address 1:** {order_data['header'].get('shipping_address1', 'N/A')}")
+                    addr2 = order_data['header'].get('shipping_address2', '')
+                    if addr2:
+                        st.write(f"**Address 2:** {addr2}")
+                    st.write(f"**City:** {order_data['header'].get('shipping_city', 'N/A')}")
+                    st.write(f"**State:** {order_data['header'].get('shipping_state', 'N/A')}")
+                    st.write(f"**Zip:** {order_data['header'].get('shipping_zip', 'N/A')}")
+                
+                with st.expander("🎨 Design Information"):
+                    design_type = order_data['decoration'].get('design_type', 'New Design')
+                    st.write(f"**Design Type:** {design_type}")
+                    if design_type == 'New Design':
+                        st.write(f"**Decoration Method:** {order_data['decoration'].get('method', 'N/A')}")
+                        st.write(f"**Design 1 Number:** {order_data['decoration'].get('design1_number', 'N/A')}")
+                        st.write(f"**Design 1 Details:** {order_data['decoration'].get('design1_description', 'N/A')}")
+                
+                with st.expander("👕 Products"):
+                    grid = order_data.get('grid', [])
+                    if grid:
+                        product_summary = []
+                        for row in grid:
+                            sku = row.get('SKU', '').strip()
+                            if sku:
+                                qty_total = sum([
+                                    int(float(row.get(size, 0) or 0)) 
+                                    for size in ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL']
+                                ])
+                                if qty_total > 0:
+                                    sizes_list = []
+                                    for size in ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL']:
+                                        qty = int(float(row.get(size, 0) or 0))
+                                        if qty > 0:
+                                            sizes_list.append(f"{size}: {qty}")
+                                    product_summary.append({
+                                        'SKU': sku,
+                                        'Brand': row.get('Brand', ''),
+                                        'Description': row.get('Description', ''),
+                                        'Color': row.get('Color', ''),
+                                        'Sizes': ', '.join(sizes_list),
+                                        'Total Qty': qty_total
+                                    })
+                        if product_summary:
+                            df_products = pd.DataFrame(product_summary)
+                            st.dataframe(df_products, use_container_width=True, hide_index=True)
+            
+            if st.button("← Back to My Orders", key='back_to_orders'):
+                st.session_state.view_mode = 'my_orders'
+                if 'viewing_order_id' in st.session_state:
+                    del st.session_state.viewing_order_id
+                st.rerun()
+            
+            st.stop()
+        else:
+            st.error("Order not found.")
+            st.session_state.view_mode = 'my_orders'
+            st.rerun()
+
+# Save Draft button (always visible when in new order mode)
+if st.session_state.view_mode == 'new_order' and not st.session_state.show_order_review and not st.session_state.order_submitted:
+    col_save, col_spacer = st.columns([1, 5])
+    with col_save:
+        if st.button("💾 Save Draft", key='save_draft'):
+            # Save current order as draft
+            import json
+            order_data_copy = json.loads(json.dumps(st.session_state.order_data, default=str))
+            order_id = save_order_to_sheet(order_data_copy, status='Draft')
+            st.success(f"✅ Draft saved! (ID: {order_id})")
+            st.info("💡 You can access your drafts from the 'My Orders' section.")
 
 # ORDER SECTION
 st.header("Order")
@@ -899,18 +1197,36 @@ with col_date1:
     st.session_state.order_data['header']['order_date'] = order_date
 
 with col_date2:
+    order_date = st.session_state.order_data['header']['order_date']
+    min_ship_date = order_date if order_date else date.today()
     ship_date = st.date_input(
         "Ship Date",
         value=st.session_state.order_data['header']['ship_date'],
-        key='ship_date_input'
+        min_value=min_ship_date,
+        key='ship_date_input',
+        help="Must be on or after Order Date"
     )
     st.session_state.order_data['header']['ship_date'] = ship_date
 
 with col_date3:
+    order_date = st.session_state.order_data['header']['order_date']
+    ship_date = st.session_state.order_data['header']['ship_date']
+    # Use the later of order_date or ship_date as minimum
+    if ship_date and order_date:
+        min_drop_dead = ship_date if ship_date > order_date else order_date
+    elif ship_date:
+        min_drop_dead = ship_date
+    elif order_date:
+        min_drop_dead = order_date
+    else:
+        min_drop_dead = date.today()
+    
     drop_dead_date = st.date_input(
         "Drop Dead Date",
         value=st.session_state.order_data['header']['drop_dead_date'],
-        key='drop_dead_date_input'
+        min_value=min_drop_dead,
+        key='drop_dead_date_input',
+        help="Must be on or after Ship Date"
     )
     st.session_state.order_data['header']['drop_dead_date'] = drop_dead_date
 
@@ -1523,59 +1839,314 @@ def validate_order_before_submission():
         if not st.session_state.order_data['decoration'].get('method'):
             errors.append("Decoration Method is required for New Design")
     
+    # Date validation
+    order_date = st.session_state.order_data['header'].get('order_date')
+    ship_date = st.session_state.order_data['header'].get('ship_date')
+    drop_dead_date = st.session_state.order_data['header'].get('drop_dead_date')
+    
+    if order_date and ship_date:
+        if ship_date < order_date:
+            errors.append("Ship Date must be on or after Order Date")
+    
+    if order_date and drop_dead_date:
+        if drop_dead_date < order_date:
+            errors.append("Drop Dead Date must be on or after Order Date")
+    
+    if ship_date and drop_dead_date:
+        if drop_dead_date < ship_date:
+            errors.append("Drop Dead Date must be on or after Ship Date")
+    
     # Warnings (non-blocking)
-    if not st.session_state.order_data['header'].get('ship_date'):
+    if not ship_date:
         warnings.append("Ship Date is not set")
     
-    if not st.session_state.order_data['header'].get('drop_dead_date'):
+    if not drop_dead_date:
         warnings.append("Drop Dead Date is not set")
     
     return errors, warnings
 
-if st.button("Generate ShopWorks Export", type="primary"):
-    # Validate before submission
-    errors, warnings = validate_order_before_submission()
-    
-    if errors:
-        st.error("❌ **Cannot submit order. Please fix the following errors:**")
-        for error in errors:
-            st.error(f"  • {error}")
-        st.stop()
-    
-    if warnings:
-        st.warning("⚠️ **Warnings (order can still be submitted):**")
-        for warning in warnings:
-            st.warning(f"  • {warning}")
-    
-    export_df = pivot_grid_to_line_items(st.session_state.order_data['grid'])
-    
-    if not export_df.empty:
-        # Generate submission number
-        submission_number = generate_submission_number()
+# Initialize review state
+if 'show_order_review' not in st.session_state:
+    st.session_state.show_order_review = False
+if 'order_submitted' not in st.session_state:
+    st.session_state.order_submitted = False
+
+# Button to start review/submission process
+if not st.session_state.show_order_review and not st.session_state.order_submitted:
+    if st.button("📋 Review Order & Generate Export", type="primary"):
+        # Validate before showing review
+        errors, warnings = validate_order_before_submission()
         
-        # Log order submission
-        order_details = f"PO#: {st.session_state.order_data['header'].get('po_number', 'N/A')}, Customer: {st.session_state.order_data['header'].get('customer', 'N/A')}"
-        log_event("ORDER_SUBMITTED", "Success", order_details, submission_number)
+        if errors:
+            st.error("❌ **Cannot submit order. Please fix the following errors:**")
+            for error in errors:
+                st.error(f"  • {error}")
+        elif warnings:
+            st.warning("⚠️ **Warnings (order can still be submitted):**")
+            for warning in warnings:
+                st.warning(f"  • {warning}")
+            # Show review even with warnings
+            st.session_state.show_order_review = True
+            st.rerun()
+        else:
+            # No errors or warnings - show review
+            st.session_state.show_order_review = True
+            st.rerun()
+
+# Order Review Screen
+if st.session_state.show_order_review and not st.session_state.order_submitted:
+    st.markdown("---")
+    st.header("📋 Order Review")
+    st.markdown("Please review your order details before submitting:")
+    
+    # Order Information
+    with st.expander("📦 Order Information", expanded=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**Sales Rep:** {st.session_state.order_data['header'].get('sales_rep', 'N/A')}")
+            st.write(f"**Customer:** {st.session_state.order_data['header'].get('customer', 'N/A')}")
+            st.write(f"**PO#:** {st.session_state.order_data['header'].get('po_number', 'N/A')}")
+            st.write(f"**Tax Status:** {st.session_state.order_data['header'].get('tax_status', 'N/A')}")
+            st.write(f"**Tags:** {st.session_state.order_data['header'].get('tags', 'N/A')}")
+            st.write(f"**Delivery Method:** {st.session_state.order_data['header'].get('delivery_method', 'N/A')}")
         
-        # Convert to CSV
-        csv_buffer = StringIO()
-        export_df.to_csv(csv_buffer, index=False)
-        csv_string = csv_buffer.getvalue()
+        with col2:
+            order_date = st.session_state.order_data['header'].get('order_date')
+            ship_date = st.session_state.order_data['header'].get('ship_date')
+            drop_dead_date = st.session_state.order_data['header'].get('drop_dead_date')
+            st.write(f"**Order Date:** {order_date.strftime('%Y-%m-%d') if order_date else 'N/A'}")
+            st.write(f"**Ship Date:** {ship_date.strftime('%Y-%m-%d') if ship_date else 'N/A'}")
+            st.write(f"**Drop Dead Date:** {drop_dead_date.strftime('%Y-%m-%d') if drop_dead_date else 'N/A'}")
         
-        st.success(f"✅ Export generated with {len(export_df)} line items! Submission Number: **{submission_number}**")
+        notes = st.session_state.order_data['header'].get('notes', '')
+        if notes:
+            st.write(f"**Notes:** {notes}")
+    
+    # Shipping Address
+    with st.expander("📍 Shipping Address"):
+        st.write(f"**Address 1:** {st.session_state.order_data['header'].get('shipping_address1', 'N/A')}")
+        addr2 = st.session_state.order_data['header'].get('shipping_address2', '')
+        if addr2:
+            st.write(f"**Address 2:** {addr2}")
+        st.write(f"**City:** {st.session_state.order_data['header'].get('shipping_city', 'N/A')}")
+        st.write(f"**State:** {st.session_state.order_data['header'].get('shipping_state', 'N/A')}")
+        st.write(f"**Zip:** {st.session_state.order_data['header'].get('shipping_zip', 'N/A')}")
+        
+        if st.session_state.order_data['header'].get('same_as_shipping', False):
+            st.write("**Billing Address:** Same as Shipping Address")
+        else:
+            st.write("**Billing Address:**")
+            st.write(f"  Address 1: {st.session_state.order_data['header'].get('billing_address1', 'N/A')}")
+            addr2_bill = st.session_state.order_data['header'].get('billing_address2', '')
+            if addr2_bill:
+                st.write(f"  Address 2: {addr2_bill}")
+            st.write(f"  City: {st.session_state.order_data['header'].get('billing_city', 'N/A')}")
+            st.write(f"  State: {st.session_state.order_data['header'].get('billing_state', 'N/A')}")
+            st.write(f"  Zip: {st.session_state.order_data['header'].get('billing_zip', 'N/A')}")
+    
+    # Design Information
+    with st.expander("🎨 Design Information"):
+        design_type = st.session_state.order_data['decoration'].get('design_type', 'New Design')
+        st.write(f"**Design Type:** {design_type}")
+        
+        if design_type == 'Re-Order':
+            st.write(f"**Reference Order Number:** {st.session_state.order_data['decoration'].get('reference_order_number', 'N/A')}")
+            st.write(f"**Design Details:** {st.session_state.order_data['decoration'].get('design1_description', 'N/A')}")
+        else:
+            st.write(f"**Decoration Method:** {st.session_state.order_data['decoration'].get('method', 'N/A')}")
+            st.write(f"**Design 1 Number:** {st.session_state.order_data['decoration'].get('design1_number', 'N/A')}")
+            st.write(f"**Design 1 Location:** {st.session_state.order_data['decoration'].get('design1_location', 'N/A')}")
+            st.write(f"**Design 1 Details:** {st.session_state.order_data['decoration'].get('design1_description', 'N/A')}")
+            
+            if st.session_state.order_data['decoration'].get('has_second_design', False):
+                st.write(f"**Design 2 Number:** {st.session_state.order_data['decoration'].get('design2_number', 'N/A')}")
+                st.write(f"**Design 2 Location:** {st.session_state.order_data['decoration'].get('design2_location', 'N/A')}")
+                st.write(f"**Design 2 Details:** {st.session_state.order_data['decoration'].get('design2_description', 'N/A')}")
+            
+            art_hours = st.session_state.order_data['decoration'].get('art_setup_hours', 0)
+            if art_hours > 0:
+                st.write(f"**Custom Art Charge:** {art_hours} hours (${art_hours * 50:.2f})")
+    
+    # Products
+    with st.expander("👕 Products"):
+        grid = st.session_state.order_data['grid']
+        if grid:
+            product_summary = []
+            for row in grid:
+                sku = row.get('SKU', '').strip()
+                if sku:
+                    qty_total = sum([
+                        int(float(row.get(size, 0) or 0)) 
+                        for size in ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL']
+                    ])
+                    if qty_total > 0:
+                        sizes_list = []
+                        for size in ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL']:
+                            qty = int(float(row.get(size, 0) or 0))
+                            if qty > 0:
+                                sizes_list.append(f"{size}: {qty}")
+                        product_summary.append({
+                            'SKU': sku,
+                            'Brand': row.get('Brand', ''),
+                            'Description': row.get('Description', ''),
+                            'Color': row.get('Color', ''),
+                            'Sizes': ', '.join(sizes_list),
+                            'Total Qty': qty_total
+                        })
+            
+            if product_summary:
+                df_products = pd.DataFrame(product_summary)
+                st.dataframe(df_products, use_container_width=True, hide_index=True)
+            else:
+                st.write("No products with quantities entered.")
+        else:
+            st.write("No products added.")
+    
+    # Pricing Summary
+    with st.expander("💰 Pricing Summary"):
+        current_method = st.session_state.order_data['decoration']['method']
+        total_units = sum([
+            int(float(row.get(size, 0) or 0))
+            for row in st.session_state.order_data['grid']
+            for size in ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL']
+        ])
+        
+        if total_units > 0:
+            pricing_tier = calculate_pricing_tier(total_units, current_method)
+        else:
+            if current_method == 'Sublimation' or current_method == 'Leather':
+                pricing_tier = '50pc'
+            else:
+                pricing_tier = '36pc'
+        
+        product_total = calculate_product_pricing(st.session_state.order_data['grid'], current_method, pricing_tier, total_units)
+        art_setup_fee = st.session_state.order_data['decoration']['art_setup_hours'] * 50.0
+        grand_total = product_total + art_setup_fee
+        
+        st.write(f"**Total Units:** {int(total_units)}")
+        st.write(f"**Pricing Tier:** {pricing_tier}")
+        st.write(f"**Product Total:** ${product_total:.2f}")
+        st.write(f"**Custom Art Charge:** ${art_setup_fee:.2f}")
+        st.write(f"**TOTAL:** ${grand_total:.2f}")
+    
+    # Action buttons
+    col1, col2, col3 = st.columns([1, 1, 2])
+    
+    with col1:
+        if st.button("✏️ Edit Order", key='edit_order'):
+            st.session_state.show_order_review = False
+            st.rerun()
+    
+    with col2:
+        if st.button("✅ Confirm & Generate Export", type="primary", key='confirm_export'):
+            export_df = pivot_grid_to_line_items(st.session_state.order_data['grid'])
+            
+            if not export_df.empty:
+                # Generate submission number
+                submission_number = generate_submission_number()
+                
+                # Save order to history
+                save_order_to_sheet(st.session_state.order_data, status='Submitted', submission_number=submission_number)
+                
+                # Log order submission
+                order_details = f"PO#: {st.session_state.order_data['header'].get('po_number', 'N/A')}, Customer: {st.session_state.order_data['header'].get('customer', 'N/A')}"
+                log_event("ORDER_SUBMITTED", "Success", order_details, submission_number)
+                
+                # Convert to CSV
+                csv_buffer = StringIO()
+                export_df.to_csv(csv_buffer, index=False)
+                csv_string = csv_buffer.getvalue()
+                
+                # Store CSV in session state for download
+                st.session_state.export_csv = csv_string
+                st.session_state.export_submission_number = submission_number
+                st.session_state.export_line_count = len(export_df)
+                st.session_state.show_order_review = False
+                st.session_state.order_submitted = True
+                st.rerun()
+            else:
+                st.warning("No line items to export. Please add items to the production grid.")
+                st.session_state.show_order_review = False
+                st.rerun()
+
+# Show export success and download button after submission
+if st.session_state.get('order_submitted', False):
+    st.markdown("---")
+    st.success(f"✅ **Order submitted successfully!** Submission Number: **{st.session_state.get('export_submission_number', 'N/A')}**")
+    st.info(f"Export generated with {st.session_state.get('export_line_count', 0)} line items.")
+    
+    if 'export_csv' in st.session_state:
         st.download_button(
-            label="📥 Download CSV",
-            data=csv_string,
-            file_name=f"shopworks_export_{submission_number}.csv",
+            label="📥 Download CSV Export",
+            data=st.session_state.export_csv,
+            file_name=f"shopworks_export_{st.session_state.export_submission_number}.csv",
             mime="text/csv",
-            key='download_shopworks_csv'
+            key='download_shopworks_csv',
+            type="primary"
         )
         
         # Display preview
-        st.markdown("### Export Preview")
-        st.dataframe(export_df, use_container_width=True)
-    else:
-        st.warning("No line items to export. Please add items to the production grid.")
+        export_df_preview = pd.read_csv(StringIO(st.session_state.export_csv))
+        with st.expander("📄 Export Preview"):
+            st.dataframe(export_df_preview, use_container_width=True)
+    
+    if st.button("🔄 Create New Order", key='new_order'):
+        # Reset order data
+        st.session_state.order_data = {
+            'header': {
+                'sales_rep': st.session_state.authenticated_rep,
+                'customer': None,
+                'order_date': date.today(),
+                'ship_date': None,
+                'drop_dead_date': None,
+                'po_number': '',
+                'tax_status': 'Taxable',
+                'tags': 'No',
+                'delivery_method': 'Standard Ground Shipping',
+                'notes': '',
+                'shipping_address1': '',
+                'shipping_address2': '',
+                'shipping_city': '',
+                'shipping_state': '',
+                'shipping_zip': '',
+                'billing_address1': '',
+                'billing_address2': '',
+                'billing_city': '',
+                'billing_state': '',
+                'billing_zip': '',
+                'same_as_shipping': False
+            },
+            'grid': [],
+            'decoration': {
+                'design_type': 'New Design',
+                'reference_order_number': '',
+                'method': 'Screenprint',
+                'design1_number': '',
+                'design1_location': '',
+                'design1_description': '',
+                'design1_colors': '',
+                'design1_let_designers_pick': False,
+                'design2_number': '',
+                'design2_location': '',
+                'design2_description': '',
+                'design2_colors': '',
+                'design2_let_designers_pick': False,
+                'design2_premium_4color': False,
+                'has_second_design': False,
+                'confetti': False,
+                'premium_4color': False,
+                'art_setup_hours': 0.0
+            }
+        }
+        st.session_state.show_order_review = False
+        st.session_state.order_submitted = False
+        if 'export_csv' in st.session_state:
+            del st.session_state.export_csv
+        if 'export_submission_number' in st.session_state:
+            del st.session_state.export_submission_number
+        if 'export_line_count' in st.session_state:
+            del st.session_state.export_line_count
+        st.rerun()
 
 # Debug section (can be removed in production)
 with st.expander("Debug: Session State"):
