@@ -449,6 +449,7 @@ with col_rep:
         st.session_state.sales_rep_mode = 'select'
     
     # Sales Rep selection mode
+    selected_rep = None
     if st.session_state.sales_rep_mode == 'select':
         rep_options = [''] + sales_reps + ['--- Add New ---']
         current_rep = st.session_state.order_data['header']['sales_rep'] or ''
@@ -466,9 +467,16 @@ with col_rep:
         
         if selected_rep_option == '--- Add New ---':
             st.session_state.sales_rep_mode = 'new'
-            selected_rep = ''
+            st.session_state.order_data['header']['sales_rep'] = ''  # Clear current rep
+            st.rerun()
         else:
             selected_rep = selected_rep_option if selected_rep_option else None
+            # If switching from new mode back to existing rep, reset customer mode
+            if selected_rep and selected_rep != current_rep:
+                # Check if this rep has customers - if so, reset customer mode to select
+                available_customers_check = get_customers_for_rep(selected_rep)
+                if available_customers_check:
+                    st.session_state.customer_mode = 'select'
     else:
         # New sales rep mode - text input
         new_rep = st.text_input(
@@ -481,8 +489,15 @@ with col_rep:
         # Button to switch back to select mode
         if st.button("← Select from list", key='sales_rep_back'):
             st.session_state.sales_rep_mode = 'select'
+            st.session_state.order_data['header']['sales_rep'] = None
+            st.session_state.order_data['header']['customer'] = None
+            st.session_state.customer_mode = 'select'
             st.rerun()
+        
+        # Add spacer to align with customer warning message
+        st.markdown("<br>", unsafe_allow_html=True)
     
+    # Update sales rep in session state
     st.session_state.order_data['header']['sales_rep'] = selected_rep if selected_rep else None
 
 with col_cust:
@@ -507,12 +522,23 @@ with col_cust:
         if 'customer_mode' not in st.session_state:
             st.session_state.customer_mode = 'select'
         
-        # Show message if new sales rep
+        # Show message if new sales rep (aligned with customer field)
         if is_new_rep:
-            st.info("No associated customers available for new sales rep.")
-            selected_customer = None
-            st.session_state.customer_mode = 'new'  # Force new mode for new rep
+            st.info("ℹ️ No associated customers available for new sales rep.")
+            # Force new mode for new rep
+            st.session_state.customer_mode = 'new'
+            new_customer = st.text_input(
+                "Customer (New)",
+                value=st.session_state.order_data['header']['customer'] or '',
+                key='customer_new_input'
+            )
+            selected_customer = new_customer.strip() if new_customer.strip() else None
         elif available_customers:
+            # If we have available customers and we're in new mode, switch to select mode
+            # (This handles the case when switching from new sales rep back to existing one)
+            if st.session_state.customer_mode == 'new' and not is_new_rep:
+                st.session_state.customer_mode = 'select'
+            
             # Customer selection mode
             if st.session_state.customer_mode == 'select':
                 customer_options = [''] + available_customers + ['--- Add New ---']
@@ -531,7 +557,8 @@ with col_cust:
                 
                 if selected_customer_option == '--- Add New ---':
                     st.session_state.customer_mode = 'new'
-                    selected_customer = ''
+                    st.session_state.order_data['header']['customer'] = ''  # Clear current customer
+                    st.rerun()
                 else:
                     selected_customer = selected_customer_option if selected_customer_option else None
             else:
@@ -546,9 +573,10 @@ with col_cust:
                 # Button to switch back to select mode
                 if st.button("← Select from list", key='customer_back'):
                     st.session_state.customer_mode = 'select'
+                    st.session_state.order_data['header']['customer'] = None
                     st.rerun()
         else:
-            # No customers available - show text input for new customer
+            # No customers available (no sales rep selected) - show text input for new customer
             if st.session_state.customer_mode == 'select':
                 st.session_state.customer_mode = 'new'
             
