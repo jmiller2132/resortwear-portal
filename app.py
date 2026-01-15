@@ -929,6 +929,12 @@ with col_title:
 
 with col_nav:
     # Navigation buttons
+    if st.button("📝 New Order", key='nav_new_order', use_container_width=True):
+        st.session_state.view_mode = 'new_order'
+        st.session_state.show_order_review = False
+        st.session_state.order_submitted = False
+        st.rerun()
+    
     if st.button("📋 My Orders", key='nav_my_orders', use_container_width=True):
         st.session_state.view_mode = 'my_orders'
         st.session_state.show_order_review = False
