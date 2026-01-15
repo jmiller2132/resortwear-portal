@@ -4,6 +4,9 @@ import numpy as np
 from io import StringIO
 from datetime import date, datetime
 import re
+import uuid
+import requests
+from urllib.parse import quote
 
 # Page configuration
 st.set_page_config(
@@ -93,7 +96,107 @@ salesreps_df = load_sheet_data("SalesReps")
 
 # Ensure SalesReps has the expected structure if empty
 if salesreps_df.empty:
-    salesreps_df = pd.DataFrame(columns=['SalesRep', 'Customer'])
+    salesreps_df = pd.DataFrame(columns=['SalesRep', 'Customer', 'PIN'])
+
+# Initialize session ID for logging
+if 'session_id' not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())[:8]
+
+# Logging Helper Functions
+def get_client_ip():
+    """Extract client IP address from Streamlit request"""
+    try:
+        # Try to get IP from headers (works on Streamlit Cloud)
+        if hasattr(st, 'request') and st.request:
+            headers = st.request.headers
+            # Check for forwarded IP (common in cloud deployments)
+            forwarded = headers.get('X-Forwarded-For', '')
+            if forwarded:
+                return forwarded.split(',')[0].strip()
+            # Fallback to other headers
+            real_ip = headers.get('X-Real-Ip', '')
+            if real_ip:
+                return real_ip
+        return 'Unknown'
+    except Exception:
+        return 'Unknown'
+
+def get_user_agent():
+    """Get browser/device information from User-Agent header"""
+    try:
+        if hasattr(st, 'request') and st.request:
+            user_agent = st.request.headers.get('User-Agent', 'Unknown')
+            # Parse basic info from user agent
+            if 'Chrome' in user_agent:
+                browser = 'Chrome'
+            elif 'Firefox' in user_agent:
+                browser = 'Firefox'
+            elif 'Safari' in user_agent:
+                browser = 'Safari'
+            elif 'Edge' in user_agent:
+                browser = 'Edge'
+            else:
+                browser = 'Other'
+            
+            if 'Windows' in user_agent:
+                os = 'Windows'
+            elif 'Mac' in user_agent or 'iPhone' in user_agent:
+                os = 'Mac/iOS'
+            elif 'Android' in user_agent:
+                os = 'Android'
+            elif 'Linux' in user_agent:
+                os = 'Linux'
+            else:
+                os = 'Unknown'
+            
+            return f"{browser} on {os}"
+        return 'Unknown'
+    except Exception:
+        return 'Unknown'
+
+def generate_submission_number():
+    """Generate unique submission number for orders"""
+    now = datetime.now()
+    return f"ORD-{now.strftime('%Y%m%d-%H%M%S')}-{st.session_state.session_id[:3].upper()}"
+
+def append_log_to_sheet(timestamp, ip_address, device, rep_name, event_type, status, details, session_id, order_number=""):
+    """Append log entry to Google Sheets ActivityLogs sheet"""
+    try:
+        # Store log in session state for potential batch writing
+        if 'pending_logs' not in st.session_state:
+            st.session_state.pending_logs = []
+        
+        log_entry = {
+            'Timestamp': timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+            'IP Address': ip_address,
+            'Device': device,
+            'Rep Name': rep_name,
+            'Event Type': event_type,
+            'Status': status,
+            'Details': details,
+            'Session ID': session_id,
+            'Order Number': order_number
+        }
+        
+        st.session_state.pending_logs.append(log_entry)
+        
+        return True
+    except Exception as e:
+        # Silently fail logging to not disrupt user experience
+        return False
+
+def log_event(event_type, status, details="", order_number=""):
+    """Main logging function"""
+    try:
+        timestamp = datetime.now()
+        ip_address = get_client_ip()
+        device = get_user_agent()
+        rep_name = st.session_state.get('authenticated_rep', 'Unknown')
+        session_id = st.session_state.get('session_id', 'Unknown')
+        
+        append_log_to_sheet(timestamp, ip_address, device, rep_name, event_type, status, details, session_id, order_number)
+    except Exception:
+        pass  # Silently fail to not disrupt app
 
 # Helper functions
 def get_available_skus():
@@ -280,6 +383,43 @@ def get_customer_address(customer_name):
         return addr1, addr2, city, state, zip_code
     return '', '', '', '', ''
 
+def get_rep_by_url(url_identifier):
+    """Find actual rep name from SalesReps sheet using URL identifier"""
+    if salesreps_df.empty or not url_identifier:
+        return None
+    
+    url_clean = str(url_identifier).strip().lower()
+    
+    # Look for URL column (case-insensitive check for column names)
+    url_col = None
+    for col in salesreps_df.columns:
+        if str(col).strip().lower() in ['url', 'uniqueurl', 'unique_url', 'url_identifier']:
+            url_col = col
+            break
+    
+    if url_col and 'SalesRep' in salesreps_df.columns:
+        # Match URL identifier to URL column
+        matches = salesreps_df[salesreps_df[url_col].astype(str).str.strip().str.lower() == url_clean]
+        if not matches.empty:
+            return str(matches.iloc[0]['SalesRep']).strip()
+    
+    return None
+
+def get_rep_pin(rep_name):
+    """Get PIN for a given sales rep from SalesReps sheet"""
+    if salesreps_df.empty or not rep_name:
+        return None
+    
+    rep_clean = str(rep_name).strip()
+    if 'SalesRep' in salesreps_df.columns:
+        matches = salesreps_df[salesreps_df['SalesRep'].astype(str).str.strip() == rep_clean]
+        if not matches.empty and 'PIN' in matches.columns:
+            pin_value = matches.iloc[0]['PIN']
+            # Return PIN as string, handling NaN/empty values
+            if pd.notna(pin_value) and str(pin_value).strip() != '':
+                return str(pin_value).strip()
+    return None
+
 def get_customers_for_rep(sales_rep):
     """Get list of customers assigned to a sales rep, sorted A-Z"""
     if customers_df.empty or sales_rep is None:
@@ -432,11 +572,144 @@ def calculate_product_pricing(grid_list, method, pricing_tier, total_units):
     
     return total_product_price
 
+# Initialize authentication state
+if 'authenticated_rep' not in st.session_state:
+    st.session_state.authenticated_rep = None
+
+# Get rep from URL query parameter
+query_params = st.query_params
+url_identifier = query_params.get('rep', None)
+
+# If no rep in URL, show error and stop
+if not url_identifier:
+    st.error("⚠️ **Access Denied**\n\nPlease access this portal using your unique sales rep URL (e.g., `?rep=yourname`).")
+    st.stop()
+
+# Convert URL identifier to actual rep name from sheet
+actual_rep_name = get_rep_by_url(url_identifier)
+
+# Check if rep exists
+if actual_rep_name is None:
+    # Log suspicious access attempt
+    log_event("SUSPICIOUS_ACCESS", "Failure", f"Invalid URL identifier: {url_identifier}")
+    st.error(f"⚠️ **Sales Rep not found.**\n\nPlease verify your URL is correct or contact your administrator.")
+    st.stop()
+
+# Check if this rep is already authenticated
+# If URL rep changes, require re-authentication
+if st.session_state.authenticated_rep != actual_rep_name:
+    # Log authentication screen display
+    log_event("AUTH_SCREEN", "Info", f"Authentication screen shown for {actual_rep_name}")
+    
+    # Not authenticated yet or rep changed - show PIN entry screen
+    st.title("🔐 Sales Rep Authentication")
+    st.markdown(f"**Sales Rep:** {actual_rep_name}")
+    
+    # PIN input
+    pin_input = st.text_input("Enter your PIN:", type="password", key='pin_input')
+    
+    if st.button("Authenticate", key='auth_button'):
+        # Get expected PIN for this rep
+        expected_pin = get_rep_pin(actual_rep_name)
+        
+        if expected_pin is None:
+            log_event("PIN_ATTEMPT", "Failure", f"PIN not configured for {actual_rep_name}")
+            st.error("⚠️ **PIN not configured for this sales rep.**\n\nPlease contact your administrator.")
+        elif pin_input.strip() == expected_pin:
+            # PIN is correct - authenticate
+            log_event("PIN_ATTEMPT", "Success", f"Correct PIN entered for {actual_rep_name}")
+            log_event("LOGIN_SUCCESS", "Success", f"User authenticated as {actual_rep_name}")
+            st.session_state.authenticated_rep = actual_rep_name
+            st.session_state.order_data['header']['sales_rep'] = actual_rep_name
+            # Clear customer selection when switching reps
+            st.session_state.order_data['header']['customer'] = None
+            st.rerun()
+        else:
+            log_event("PIN_ATTEMPT", "Failure", f"Incorrect PIN entered for {actual_rep_name}")
+            st.error("❌ **Incorrect PIN.** Please try again.")
+    
+    st.stop()  # Stop here until authenticated
+
+# Authentication successful - proceed with app
+# Set the sales rep in order data
+st.session_state.order_data['header']['sales_rep'] = st.session_state.authenticated_rep
+
+# Check for admin log viewer access
+query_params = st.query_params
+is_admin = query_params.get('admin', 'false').lower() == 'true'
+admin_pin = query_params.get('pin', '')
+
+# Admin PIN (should be stored in secrets or environment variable in production)
+ADMIN_PIN = "ADMIN123"  # TODO: Move to Streamlit secrets
+
+if is_admin and admin_pin == ADMIN_PIN:
+    # Show admin log viewer
+    st.title("📊 Activity Log Viewer")
+    st.markdown("---")
+    
+    # Load logs from session state (in production, load from Google Sheets)
+    if 'pending_logs' in st.session_state and st.session_state.pending_logs:
+        logs_df = pd.DataFrame(st.session_state.pending_logs)
+        
+        # Filter for last 30 days
+        logs_df['Timestamp'] = pd.to_datetime(logs_df['Timestamp'])
+        thirty_days_ago = datetime.now() - pd.Timedelta(days=30)
+        logs_df = logs_df[logs_df['Timestamp'] >= thirty_days_ago]
+        
+        # Sort by timestamp (newest first)
+        logs_df = logs_df.sort_values('Timestamp', ascending=False)
+        
+        # Filters
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            filter_rep = st.selectbox("Filter by Rep", options=['All'] + sorted(logs_df['Rep Name'].unique().tolist()))
+        with col2:
+            filter_event = st.selectbox("Filter by Event Type", options=['All'] + sorted(logs_df['Event Type'].unique().tolist()))
+        with col3:
+            filter_status = st.selectbox("Filter by Status", options=['All'] + sorted(logs_df['Status'].unique().tolist()))
+        
+        # Apply filters
+        filtered_logs = logs_df.copy()
+        if filter_rep != 'All':
+            filtered_logs = filtered_logs[filtered_logs['Rep Name'] == filter_rep]
+        if filter_event != 'All':
+            filtered_logs = filtered_logs[filtered_logs['Event Type'] == filter_event]
+        if filter_status != 'All':
+            filtered_logs = filtered_logs[filtered_logs['Status'] == filter_status]
+        
+        # Display logs
+        st.markdown(f"**Showing {len(filtered_logs)} log entries (last 30 days)**")
+        
+        # Highlight suspicious activity
+        def highlight_suspicious(row):
+            if row['Event Type'] == 'SUSPICIOUS_ACCESS' or (row['Event Type'] == 'PIN_ATTEMPT' and row['Status'] == 'Failure'):
+                return ['background-color: #ffcccc'] * len(row)
+            elif row['Event Type'] == 'LOGIN_SUCCESS':
+                return ['background-color: #ccffcc'] * len(row)
+            return [''] * len(row)
+        
+        if not filtered_logs.empty:
+            styled_logs = filtered_logs.style.apply(highlight_suspicious, axis=1)
+            st.dataframe(styled_logs, use_container_width=True, hide_index=True)
+            
+            # Export to CSV
+            csv_logs = filtered_logs.to_csv(index=False)
+            st.download_button(
+                label="📥 Export Logs to CSV",
+                data=csv_logs,
+                file_name=f"activity_logs_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+        else:
+            st.info("No logs found matching the selected filters.")
+    else:
+        st.info("No logs available. Logs will appear here as activity occurs.")
+    
+    st.markdown("---")
+    st.markdown("**Note:** Logs are currently stored in session state. For production, configure Google Sheets API to persist logs.")
+
 # Main App Title
 st.title("👕 Eagle Resort Wear Portal 🦅")
-# Link to Google Sheets
-SHEETS_LINK = "https://docs.google.com/spreadsheets/d/14DYELQWKuQefjFEpTaltaS5YHhXeiIhr-QJ327mGwt0/edit?usp=sharing"
-st.markdown(f"📊 [View/Edit Data Sheets]({SHEETS_LINK})")
 st.markdown("---")
 
 # ORDER SECTION
@@ -446,30 +719,24 @@ st.header("Order")
 col_rep, col_cust = st.columns(2)
 
 with col_rep:
-    # Sales Rep Dropdown
-    if not salesreps_df.empty and 'SalesRep' in salesreps_df.columns:
-        sales_reps = sorted(salesreps_df['SalesRep'].unique().tolist())
-    else:
-        # Fallback: extract from customers or use default
-        sales_reps = sorted(customers_df['SalesRep'].unique().tolist()) if 'SalesRep' in customers_df.columns else ['Rep 1', 'Rep 2', 'Rep 3']
-    
-    selected_rep = st.selectbox(
+    # Sales Rep is locked to authenticated rep - show as read-only
+    authenticated_rep_name = st.session_state.authenticated_rep
+    st.text_input(
         "Sales Rep",
-        options=[''] + sales_reps,
-        index=0 if st.session_state.order_data['header']['sales_rep'] is None else (sales_reps.index(st.session_state.order_data['header']['sales_rep']) + 1 if st.session_state.order_data['header']['sales_rep'] in sales_reps else 0),
-        key='sales_rep_select'
+        value=authenticated_rep_name,
+        disabled=True,
+        key='sales_rep_display'
     )
-    st.session_state.order_data['header']['sales_rep'] = selected_rep if selected_rep else None
+    # Keep sales_rep in session state
+    st.session_state.order_data['header']['sales_rep'] = authenticated_rep_name
 
 with col_cust:
-    # Customer Dropdown (filtered by Sales Rep - only show if Sales Rep is selected)
+    # Customer Dropdown (filtered by authenticated Sales Rep)
     # Use container to stabilize layout
     customer_container = st.container()
     with customer_container:
-        if selected_rep:
-            available_customers = get_customers_for_rep(selected_rep)
-        else:
-            available_customers = []  # Don't show customers if no Sales Rep selected
+        # Always use authenticated rep for customer filtering
+        available_customers = get_customers_for_rep(authenticated_rep_name)
         
         if available_customers:
             selected_customer = st.selectbox(
@@ -1088,16 +1355,23 @@ if st.button("Generate ShopWorks Export", type="primary"):
     export_df = pivot_grid_to_line_items(st.session_state.order_data['grid'])
     
     if not export_df.empty:
+        # Generate submission number
+        submission_number = generate_submission_number()
+        
+        # Log order submission
+        order_details = f"PO#: {st.session_state.order_data['header'].get('po_number', 'N/A')}, Customer: {st.session_state.order_data['header'].get('customer', 'N/A')}"
+        log_event("ORDER_SUBMITTED", "Success", order_details, submission_number)
+        
         # Convert to CSV
         csv_buffer = StringIO()
         export_df.to_csv(csv_buffer, index=False)
         csv_string = csv_buffer.getvalue()
         
-        st.success(f"Export generated with {len(export_df)} line items!")
+        st.success(f"✅ Export generated with {len(export_df)} line items! Submission Number: **{submission_number}**")
         st.download_button(
-            label="Download CSV",
+            label="📥 Download CSV",
             data=csv_string,
-            file_name=f"shopworks_export_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            file_name=f"shopworks_export_{submission_number}.csv",
             mime="text/csv",
             key='download_shopworks_csv'
         )
