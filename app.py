@@ -24,7 +24,7 @@ if 'order_data' not in st.session_state:
             'po_number': '',
             'tax_status': 'Taxable',
             'tags': 'No',
-            'freight': 0.0,
+            'delivery_method': 'Standard Ground Shipping',
             'notes': '',
             'shipping_address1': '',
             'shipping_address2': '',
@@ -267,7 +267,16 @@ def get_customer_address(customer_name):
         addr2 = '' if pd.isna(row.get('Address2', '')) or str(row.get('Address2', '')).strip() == '' else str(row.get('Address2', '')).strip()
         city = '' if pd.isna(row.get('AddressCity', '')) or str(row.get('AddressCity', '')).strip() == '' else str(row.get('AddressCity', '')).strip()
         state = '' if pd.isna(row.get('AddressState', '')) or str(row.get('AddressState', '')).strip() == '' else str(row.get('AddressState', '')).strip()
-        zip_code = '' if pd.isna(row.get('AddressZip', '')) or str(row.get('AddressZip', '')).strip() == '' else str(row.get('AddressZip', '')).strip()
+        zip_code_raw = row.get('AddressZip', '')
+        if pd.isna(zip_code_raw) or str(zip_code_raw).strip() == '':
+            zip_code = ''
+        else:
+            # Convert to string and remove decimal if it's a float (e.g., 12345.0 -> 12345)
+            zip_str = str(zip_code_raw).strip()
+            if '.' in zip_str:
+                zip_code = zip_str.split('.')[0]
+            else:
+                zip_code = zip_str
         return addr1, addr2, city, state, zip_code
     return '', '', '', '', ''
 
@@ -437,177 +446,54 @@ st.header("Order")
 col_rep, col_cust = st.columns(2)
 
 with col_rep:
-    # Sales Rep - Get list of existing sales reps
+    # Sales Rep Dropdown
     if not salesreps_df.empty and 'SalesRep' in salesreps_df.columns:
         sales_reps = sorted(salesreps_df['SalesRep'].unique().tolist())
     else:
         # Fallback: extract from customers or use default
         sales_reps = sorted(customers_df['SalesRep'].unique().tolist()) if 'SalesRep' in customers_df.columns else ['Rep 1', 'Rep 2', 'Rep 3']
     
-    # Initialize sales rep mode if not exists
-    if 'sales_rep_mode' not in st.session_state:
-        st.session_state.sales_rep_mode = 'select'
-    
-    # Sales Rep selection mode
-    selected_rep = None
-    if st.session_state.sales_rep_mode == 'select':
-        rep_options = [''] + sales_reps + ['--- Add New ---']
-        current_rep = st.session_state.order_data['header']['sales_rep'] or ''
-        if current_rep in sales_reps:
-            rep_index = sales_reps.index(current_rep) + 1
-        else:
-            rep_index = 0
-        
-        selected_rep_option = st.selectbox(
-            "Sales Rep",
-            options=rep_options,
-            index=rep_index,
-            key='sales_rep_select'
-        )
-        
-        if selected_rep_option == '--- Add New ---':
-            st.session_state.sales_rep_mode = 'new'
-            st.session_state.order_data['header']['sales_rep'] = ''  # Clear current rep
-            st.rerun()
-        else:
-            selected_rep = selected_rep_option if selected_rep_option else None
-            # If switching from new mode back to existing rep, reset customer mode
-            if selected_rep and selected_rep != current_rep:
-                # Check if this rep has customers - if so, reset customer mode to select
-                available_customers_check = get_customers_for_rep(selected_rep)
-                if available_customers_check:
-                    st.session_state.customer_mode = 'select'
-    else:
-        # New sales rep mode - text input
-        new_rep = st.text_input(
-            "Sales Rep (New)",
-            value=st.session_state.order_data['header']['sales_rep'] or '',
-            key='sales_rep_new_input'
-        )
-        selected_rep = new_rep.strip() if new_rep.strip() else None
-        
-        # Button to switch back to select mode
-        if st.button("← Select from list", key='sales_rep_back'):
-            st.session_state.sales_rep_mode = 'select'
-            st.session_state.order_data['header']['sales_rep'] = None
-            st.session_state.order_data['header']['customer'] = None
-            st.session_state.customer_mode = 'select'
-            st.rerun()
-        
-        # Add spacer to align with customer warning message
-        st.markdown("<br>", unsafe_allow_html=True)
-    
-    # Update sales rep in session state
+    selected_rep = st.selectbox(
+        "Sales Rep",
+        options=[''] + sales_reps,
+        index=0 if st.session_state.order_data['header']['sales_rep'] is None else (sales_reps.index(st.session_state.order_data['header']['sales_rep']) + 1 if st.session_state.order_data['header']['sales_rep'] in sales_reps else 0),
+        key='sales_rep_select'
+    )
     st.session_state.order_data['header']['sales_rep'] = selected_rep if selected_rep else None
 
 with col_cust:
-    # Customer - Check if sales rep is new (not in list)
-    current_rep = st.session_state.order_data['header']['sales_rep']
-    is_new_rep = current_rep and current_rep not in sales_reps
-    
-    # Customer Dropdown (filtered by Sales Rep)
+    # Customer Dropdown (filtered by Sales Rep - only show if Sales Rep is selected)
+    # Use container to stabilize layout
     customer_container = st.container()
     with customer_container:
-        if current_rep and not is_new_rep:
-            # Sales rep exists in list, get associated customers
-            available_customers = get_customers_for_rep(current_rep)
-        elif is_new_rep:
-            # New sales rep - no customers available
-            available_customers = []
+        if selected_rep:
+            available_customers = get_customers_for_rep(selected_rep)
         else:
-            # No sales rep selected
-            available_customers = []
+            available_customers = []  # Don't show customers if no Sales Rep selected
         
-        # Initialize customer mode if not exists
-        if 'customer_mode' not in st.session_state:
-            st.session_state.customer_mode = 'select'
-        
-        # Show message if new sales rep (aligned with customer field)
-        if is_new_rep:
-            st.info("ℹ️ No associated customers available for new sales rep.")
-            # Force new mode for new rep
-            st.session_state.customer_mode = 'new'
-            new_customer = st.text_input(
-                "Customer (New)",
-                value=st.session_state.order_data['header']['customer'] or '',
-                key='customer_new_input'
+        if available_customers:
+            selected_customer = st.selectbox(
+                "Customer",
+                options=[''] + available_customers,
+                index=0 if st.session_state.order_data['header']['customer'] is None else (available_customers.index(st.session_state.order_data['header']['customer']) + 1 if st.session_state.order_data['header']['customer'] in available_customers else 0),
+                key='customer_select'
             )
-            selected_customer = new_customer.strip() if new_customer.strip() else None
-        elif available_customers:
-            # If we have available customers and we're in new mode, switch to select mode
-            # (This handles the case when switching from new sales rep back to existing one)
-            if st.session_state.customer_mode == 'new' and not is_new_rep:
-                st.session_state.customer_mode = 'select'
-            
-            # Customer selection mode
-            if st.session_state.customer_mode == 'select':
-                customer_options = [''] + available_customers + ['--- Add New ---']
-                current_customer = st.session_state.order_data['header']['customer'] or ''
-                if current_customer in available_customers:
-                    cust_index = available_customers.index(current_customer) + 1
-                else:
-                    cust_index = 0
-                
-                selected_customer_option = st.selectbox(
-                    "Customer",
-                    options=customer_options,
-                    index=cust_index,
-                    key='customer_select'
-                )
-                
-                if selected_customer_option == '--- Add New ---':
-                    st.session_state.customer_mode = 'new'
-                    st.session_state.order_data['header']['customer'] = ''  # Clear current customer
-                    st.rerun()
-                else:
-                    selected_customer = selected_customer_option if selected_customer_option else None
-            else:
-                # New customer mode - text input
-                new_customer = st.text_input(
-                    "Customer (New)",
-                    value=st.session_state.order_data['header']['customer'] or '',
-                    key='customer_new_input'
-                )
-                selected_customer = new_customer.strip() if new_customer.strip() else None
-                
-                # Button to switch back to select mode
-                if st.button("← Select from list", key='customer_back'):
-                    st.session_state.customer_mode = 'select'
-                    st.session_state.order_data['header']['customer'] = None
-                    st.rerun()
         else:
-            # No customers available (no sales rep selected) - show text input for new customer
-            if st.session_state.customer_mode == 'select':
-                st.session_state.customer_mode = 'new'
-            
-            new_customer = st.text_input(
-                "Customer (New)",
-                value=st.session_state.order_data['header']['customer'] or '',
-                key='customer_new_input'
-            )
-            selected_customer = new_customer.strip() if new_customer.strip() else None
+            selected_customer = None
+            # Use placeholder to maintain layout height
+            st.selectbox("Customer", options=[''], disabled=True, key='customer_select_empty')
     
-    # Auto-fill address when customer is selected (only if customer exists in list)
+    # Auto-fill address when customer is selected
     if selected_customer:
         prev_customer = st.session_state.order_data['header'].get('customer')
-        is_new_customer = selected_customer not in available_customers
-        
         if selected_customer != prev_customer:
-            if is_new_customer:
-                # New customer - clear address fields
-                st.session_state.order_data['header']['shipping_address1'] = ''
-                st.session_state.order_data['header']['shipping_address2'] = ''
-                st.session_state.order_data['header']['shipping_city'] = ''
-                st.session_state.order_data['header']['shipping_state'] = ''
-                st.session_state.order_data['header']['shipping_zip'] = ''
-            else:
-                # Existing customer - update address
-                addr1, addr2, city, state, zip_code = get_customer_address(selected_customer)
-                st.session_state.order_data['header']['shipping_address1'] = addr1
-                st.session_state.order_data['header']['shipping_address2'] = addr2
-                st.session_state.order_data['header']['shipping_city'] = city
-                st.session_state.order_data['header']['shipping_state'] = state
-                st.session_state.order_data['header']['shipping_zip'] = zip_code
+            # Customer changed, update address
+            addr1, addr2, city, state, zip_code = get_customer_address(selected_customer)
+            st.session_state.order_data['header']['shipping_address1'] = addr1
+            st.session_state.order_data['header']['shipping_address2'] = addr2
+            st.session_state.order_data['header']['shipping_city'] = city
+            st.session_state.order_data['header']['shipping_state'] = state
+            st.session_state.order_data['header']['shipping_zip'] = zip_code
         st.session_state.order_data['header']['customer'] = selected_customer
     else:
         st.session_state.order_data['header']['customer'] = None
@@ -639,8 +525,8 @@ with col_date3:
     )
     st.session_state.order_data['header']['drop_dead_date'] = drop_dead_date
 
-# Row 2: PO#, Tax Status, Tags, Freight
-col_po, col_tax, col_tags, col_freight = st.columns(4)
+# Row 2: PO#, Tax Status, Tags, Delivery Method
+col_po, col_tax, col_tags, col_delivery = st.columns(4)
 
 with col_po:
     po_number = st.text_input(
@@ -668,15 +554,18 @@ with col_tags:
     )
     st.session_state.order_data['header']['tags'] = tags
 
-with col_freight:
-    freight = st.number_input(
-        "Freight ($)",
-        min_value=0.0,
-        step=0.01,
-        value=st.session_state.order_data['header']['freight'],
-        key='freight_input'
+with col_delivery:
+    # Initialize delivery_method if it doesn't exist (for existing sessions)
+    if 'delivery_method' not in st.session_state.order_data['header']:
+        st.session_state.order_data['header']['delivery_method'] = 'Standard Ground Shipping'
+    
+    delivery_method = st.selectbox(
+        "Delivery Method",
+        options=['Standard Ground Shipping', 'Sales Representative Delivery'],
+        index=0 if st.session_state.order_data['header']['delivery_method'] == 'Standard Ground Shipping' else 1,
+        key='delivery_method_select'
     )
-    st.session_state.order_data['header']['freight'] = freight
+    st.session_state.order_data['header']['delivery_method'] = delivery_method
 
 # Notes Field
 notes = st.text_area(
@@ -835,28 +724,28 @@ else:
     design1_description = st.text_area("Design Details", value=st.session_state.order_data['decoration']['design1_description'], key='design1_description', height=80)
     st.session_state.order_data['decoration']['design1_description'] = design1_description
 
+    design1_colors = st.text_area("Requested Colors", value=st.session_state.order_data['decoration']['design1_colors'], key='design1_colors', height=60)
+    
+    # Update session state based on checkbox BEFORE processing colors
     design1_let_designers_pick = st.checkbox(
         "Let Designers Pick",
         value=st.session_state.order_data['decoration']['design1_let_designers_pick'],
         key='design1_let_designers_pick_checkbox'
     )
     st.session_state.order_data['decoration']['design1_let_designers_pick'] = design1_let_designers_pick
-
-    # Update session state based on checkbox BEFORE rendering text_area
+    
     if design1_let_designers_pick:
         st.session_state.order_data['decoration']['design1_colors'] = "Let designers pick colors"
     else:
         # Only update if it's currently set to "Let designers pick colors" (don't overwrite user input)
         if st.session_state.order_data['decoration']['design1_colors'] == "Let designers pick colors":
             st.session_state.order_data['decoration']['design1_colors'] = ""
-
-    design1_colors = st.text_area("Requested Colors", value=st.session_state.order_data['decoration']['design1_colors'], key='design1_colors', height=60)
-    if not design1_let_designers_pick:
-        st.session_state.order_data['decoration']['design1_colors'] = design1_colors
+        else:
+            st.session_state.order_data['decoration']['design1_colors'] = design1_colors
 
     # Upcharge options for Design 1
     if decoration_method == 'Embroidery':
-        confetti = st.checkbox("Confetti (+$2.00/pc)", value=st.session_state.order_data['decoration']['confetti'], key='confetti_checkbox')
+        confetti = st.checkbox("Confetti Thread (+$2.00/pc)", value=st.session_state.order_data['decoration']['confetti'], key='confetti_checkbox')
         st.session_state.order_data['decoration']['confetti'] = confetti
         st.session_state.order_data['decoration']['premium_4color'] = False
     elif decoration_method == 'Screenprint':
@@ -867,9 +756,9 @@ else:
         st.session_state.order_data['decoration']['confetti'] = False
         st.session_state.order_data['decoration']['premium_4color'] = False
 
-    # Art Setup Hours (moved below checkboxes)
+    # Custom Art Charge (moved below checkboxes)
     art_setup_hours = st.number_input(
-        "Art Setup Hours ($25 per half-hour)",
+        "Custom Art Charge ($25 per half-hour)",
         min_value=0.0,
         step=0.5,
         value=st.session_state.order_data['decoration']['art_setup_hours'],
@@ -917,6 +806,9 @@ else:
             design2_description = st.text_area("Design Details", value=st.session_state.order_data['decoration']['design2_description'], key='design2_description', height=80)
             st.session_state.order_data['decoration']['design2_description'] = design2_description
             
+            design2_colors = st.text_area("Requested Colors", value=st.session_state.order_data['decoration']['design2_colors'], key='design2_colors', height=60)
+            
+            # Update session state based on checkbox BEFORE processing colors
             design2_let_designers_pick = st.checkbox(
                 "Let Designers Pick",
                 value=st.session_state.order_data['decoration']['design2_let_designers_pick'],
@@ -924,17 +816,14 @@ else:
             )
             st.session_state.order_data['decoration']['design2_let_designers_pick'] = design2_let_designers_pick
             
-            # Update session state based on checkbox BEFORE rendering text_area
             if design2_let_designers_pick:
                 st.session_state.order_data['decoration']['design2_colors'] = "Let designers pick colors"
             else:
                 # Only update if it's currently set to "Let designers pick colors" (don't overwrite user input)
                 if st.session_state.order_data['decoration']['design2_colors'] == "Let designers pick colors":
                     st.session_state.order_data['decoration']['design2_colors'] = ""
-            
-            design2_colors = st.text_area("Requested Colors", value=st.session_state.order_data['decoration']['design2_colors'], key='design2_colors', height=60)
-            if not design2_let_designers_pick:
-                st.session_state.order_data['decoration']['design2_colors'] = design2_colors
+                else:
+                    st.session_state.order_data['decoration']['design2_colors'] = design2_colors
             
             design2_premium_4color = st.checkbox(
                 "Premium 4-Color (+$2.00/pc)",
