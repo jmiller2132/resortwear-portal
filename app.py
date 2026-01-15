@@ -65,6 +65,14 @@ if 'order_data' not in st.session_state:
         }
     }
 
+# Initialize view mode and review state
+if 'view_mode' not in st.session_state:
+    st.session_state.view_mode = 'new_order'  # Default to new order screen
+if 'show_order_review' not in st.session_state:
+    st.session_state.show_order_review = False
+if 'order_submitted' not in st.session_state:
+    st.session_state.order_submitted = False
+
 # Base URL for Google Sheets CSV export
 # NOTE: This method requires the Google Sheet to be publicly accessible
 # Go to Google Sheets → Share → "Change to anyone with the link" → Viewer
@@ -912,33 +920,23 @@ if is_admin:
     st.markdown("---")
     st.markdown("**Note:** Logs are currently stored in session state. For production, configure Google Sheets API to persist logs.")
 
-# Main App Title
-st.title("👕 Eagle Resort Wear Portal 🦅")
-
-# Navigation: My Orders or New Order
+# Main App Title with Navigation buttons on the right
 authenticated_rep_name = st.session_state.authenticated_rep
 
-# Initialize view mode
-if 'view_mode' not in st.session_state:
-    st.session_state.view_mode = 'new_order'  # 'new_order' or 'my_orders'
+col_title, col_nav = st.columns([3, 1])
+with col_title:
+    st.title("👕 Eagle Resort Wear Portal 🦅")
 
-# Navigation buttons
-col_nav1, col_nav2, col_nav3 = st.columns([1, 1, 4])
-with col_nav1:
-    if st.button("📝 New Order", key='nav_new_order'):
-        st.session_state.view_mode = 'new_order'
+with col_nav:
+    # Navigation buttons
+    if st.button("📋 My Orders", key='nav_my_orders', use_container_width=True):
+        st.session_state.view_mode = 'my_orders'
         st.session_state.show_order_review = False
         st.session_state.order_submitted = False
         st.rerun()
-
-with col_nav2:
-    if st.button("📋 My Orders", key='nav_my_orders'):
-        st.session_state.view_mode = 'my_orders'
-        st.rerun()
-
-# Conditionally show Google Sheets link based on rep permissions
-if authenticated_rep_name and can_rep_view_sheets(authenticated_rep_name):
-    with col_nav3:
+    
+    # Conditionally show Google Sheets link based on rep permissions
+    if authenticated_rep_name and can_rep_view_sheets(authenticated_rep_name):
         SHEETS_LINK = "https://docs.google.com/spreadsheets/d/14DYELQWKuQefjFEpTaltaS5YHhXeiIhr-QJ327mGwt0/edit?usp=sharing"
         st.markdown(f"📊 [View/Edit Data Sheets]({SHEETS_LINK})")
 
@@ -1865,11 +1863,7 @@ def validate_order_before_submission():
     
     return errors, warnings
 
-# Initialize review state
-if 'show_order_review' not in st.session_state:
-    st.session_state.show_order_review = False
-if 'order_submitted' not in st.session_state:
-    st.session_state.order_submitted = False
+# Review state is already initialized at the top of the file
 
 # Button to start review/submission process
 if not st.session_state.show_order_review and not st.session_state.order_submitted:
