@@ -155,9 +155,14 @@ def get_user_agent():
         return 'Unknown'
 
 def generate_submission_number():
-    """Generate unique submission number for orders"""
-    now = datetime.now()
-    return f"ORD-{now.strftime('%Y%m%d-%H%M%S')}-{st.session_state.session_id[:3].upper()}"
+    """Generate unique submission number for orders (rolling integer starting at 1001)"""
+    # Initialize submission counter if not exists
+    if 'submission_counter' not in st.session_state:
+        st.session_state.submission_counter = 1000  # Start at 1000, first will be 1001
+    
+    # Increment counter
+    st.session_state.submission_counter += 1
+    return f"#{st.session_state.submission_counter}"
 
 def append_log_to_sheet(timestamp, ip_address, device, rep_name, event_type, status, details, session_id, order_number=""):
     """Append log entry to Google Sheets ActivityLogs sheet"""
@@ -420,6 +425,27 @@ def get_rep_pin(rep_name):
                 return str(pin_value).strip()
     return None
 
+def can_rep_view_sheets(rep_name):
+    """Check if sales rep can view the Google Sheets link"""
+    if salesreps_df.empty or not rep_name:
+        return False
+    
+    rep_clean = str(rep_name).strip()
+    if 'SalesRep' in salesreps_df.columns:
+        matches = salesreps_df[salesreps_df['SalesRep'].astype(str).str.strip() == rep_clean]
+        if not matches.empty:
+            # Look for column that controls sheet visibility (case-insensitive)
+            for col in salesreps_df.columns:
+                col_lower = str(col).strip().lower()
+                if col_lower in ['showsheets', 'show_sheets', 'canviewsheets', 'can_view_sheets', 'sheetsaccess', 'sheets_access']:
+                    value = matches.iloc[0][col]
+                    # Check if value is True, 'Yes', 'Y', '1', etc.
+                    if pd.notna(value):
+                        value_str = str(value).strip().lower()
+                        if value_str in ['true', 'yes', 'y', '1', 'show']:
+                            return True
+    return False
+
 def get_customers_for_rep(sales_rep):
     """Get list of customers assigned to a sales rep, sorted A-Z"""
     if customers_df.empty or sales_rep is None:
@@ -576,8 +602,89 @@ def calculate_product_pricing(grid_list, method, pricing_tier, total_units):
 if 'authenticated_rep' not in st.session_state:
     st.session_state.authenticated_rep = None
 
-# Get rep from URL query parameter
+# Get query parameters
 query_params = st.query_params
+is_admin = query_params.get('admin', 'false').lower() == 'true'
+admin_pin = query_params.get('pin', '')
+
+# Check for admin access FIRST (before rep check)
+ADMIN_PIN = "ADMIN123"  # TODO: Move to Streamlit secrets for production
+
+if is_admin:
+    # Check admin PIN
+    if admin_pin != ADMIN_PIN:
+        st.error("❌ **Invalid Admin PIN.** Access denied.")
+        st.info("💡 **How to access:** Add `?admin=true&pin=ADMIN123` to your URL")
+        st.stop()
+    
+    # Admin authenticated - show log viewer and stop (don't need rep)
+    st.title("📊 Activity Log Viewer")
+    st.info("💡 **Note:** No SalesRep entry needed. Admin access is separate from sales rep authentication.")
+    st.markdown("---")
+    
+    # Load logs from session state (in production, load from Google Sheets)
+    if 'pending_logs' in st.session_state and st.session_state.pending_logs:
+        logs_df = pd.DataFrame(st.session_state.pending_logs)
+        
+        # Filter for last 30 days
+        logs_df['Timestamp'] = pd.to_datetime(logs_df['Timestamp'])
+        thirty_days_ago = datetime.now() - pd.Timedelta(days=30)
+        logs_df = logs_df[logs_df['Timestamp'] >= thirty_days_ago]
+        
+        # Sort by timestamp (newest first)
+        logs_df = logs_df.sort_values('Timestamp', ascending=False)
+        
+        # Filters
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            filter_rep = st.selectbox("Filter by Rep", options=['All'] + sorted(logs_df['Rep Name'].unique().tolist()))
+        with col2:
+            filter_event = st.selectbox("Filter by Event Type", options=['All'] + sorted(logs_df['Event Type'].unique().tolist()))
+        with col3:
+            filter_status = st.selectbox("Filter by Status", options=['All'] + sorted(logs_df['Status'].unique().tolist()))
+        
+        # Apply filters
+        filtered_logs = logs_df.copy()
+        if filter_rep != 'All':
+            filtered_logs = filtered_logs[filtered_logs['Rep Name'] == filter_rep]
+        if filter_event != 'All':
+            filtered_logs = filtered_logs[filtered_logs['Event Type'] == filter_event]
+        if filter_status != 'All':
+            filtered_logs = filtered_logs[filtered_logs['Status'] == filter_status]
+        
+        # Display logs
+        st.markdown(f"**Showing {len(filtered_logs)} log entries (last 30 days)**")
+        
+        # Highlight suspicious activity
+        def highlight_suspicious(row):
+            if row['Event Type'] == 'SUSPICIOUS_ACCESS' or (row['Event Type'] == 'PIN_ATTEMPT' and row['Status'] == 'Failure'):
+                return ['background-color: #ffcccc'] * len(row)
+            elif row['Event Type'] == 'LOGIN_SUCCESS':
+                return ['background-color: #ccffcc'] * len(row)
+            return [''] * len(row)
+        
+        if not filtered_logs.empty:
+            styled_logs = filtered_logs.style.apply(highlight_suspicious, axis=1)
+            st.dataframe(styled_logs, use_container_width=True, hide_index=True)
+            
+            # Export to CSV
+            csv_logs = filtered_logs.to_csv(index=False)
+            st.download_button(
+                label="📥 Export Logs to CSV",
+                data=csv_logs,
+                file_name=f"activity_logs_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+        else:
+            st.info("No logs found matching the selected filters.")
+    else:
+        st.info("No logs available. Logs will appear here as activity occurs.")
+    
+    st.markdown("---")
+    st.markdown("**Note:** Logs are currently stored in session state. For production, configure Google Sheets API to persist logs.")
+    st.stop()  # Stop here - admin doesn't need to access the main app
+
+# Get rep from URL query parameter (only if not admin)
 url_identifier = query_params.get('rep', None)
 
 # If no rep in URL, show error and stop
@@ -632,6 +739,7 @@ if st.session_state.authenticated_rep != actual_rep_name:
 
 # Authentication successful - proceed with app
 # Set the sales rep in order data
+st.session_state.authenticated_rep = st.session_state.authenticated_rep  # Ensure it's set
 st.session_state.order_data['header']['sales_rep'] = st.session_state.authenticated_rep
 
 # Check for admin log viewer access
@@ -639,10 +747,17 @@ query_params = st.query_params
 is_admin = query_params.get('admin', 'false').lower() == 'true'
 admin_pin = query_params.get('pin', '')
 
-# Admin PIN (should be stored in secrets or environment variable in production)
-ADMIN_PIN = "ADMIN123"  # TODO: Move to Streamlit secrets
+# Admin PIN (hardcoded - no need for SalesRep sheet entry)
+# To access admin logs, add to URL: ?admin=true&pin=ADMIN123
+# Example: https://yourapp.streamlit.app?admin=true&pin=ADMIN123
+ADMIN_PIN = "ADMIN123"  # TODO: Move to Streamlit secrets for production
 
-if is_admin and admin_pin == ADMIN_PIN:
+if is_admin:
+    # Check admin PIN
+    if admin_pin != ADMIN_PIN:
+        st.error("❌ **Invalid Admin PIN.** Access denied.")
+        st.info("💡 **How to access:** Add `?admin=true&pin=ADMIN123` to your URL")
+        st.stop()
     # Show admin log viewer
     st.title("📊 Activity Log Viewer")
     st.markdown("---")
@@ -710,6 +825,13 @@ if is_admin and admin_pin == ADMIN_PIN:
 
 # Main App Title
 st.title("👕 Eagle Resort Wear Portal 🦅")
+
+# Conditionally show Google Sheets link based on rep permissions
+authenticated_rep_name = st.session_state.authenticated_rep
+if authenticated_rep_name and can_rep_view_sheets(authenticated_rep_name):
+    SHEETS_LINK = "https://docs.google.com/spreadsheets/d/14DYELQWKuQefjFEpTaltaS5YHhXeiIhr-QJ327mGwt0/edit?usp=sharing"
+    st.markdown(f"📊 [View/Edit Data Sheets]({SHEETS_LINK})")
+
 st.markdown("---")
 
 # ORDER SECTION
@@ -1351,7 +1473,80 @@ def pivot_grid_to_line_items(grid_list):
     
     return pd.DataFrame(line_items)
 
+# Validation function before submission
+def validate_order_before_submission():
+    """Validate order data before allowing submission"""
+    errors = []
+    warnings = []
+    
+    # Required fields
+    if not st.session_state.order_data['header'].get('po_number', '').strip():
+        errors.append("PO# is required")
+    
+    if not st.session_state.order_data['header'].get('customer'):
+        errors.append("Customer is required")
+    
+    if not st.session_state.order_data['header'].get('shipping_address1', '').strip():
+        errors.append("Shipping Address is required")
+    
+    if not st.session_state.order_data['header'].get('shipping_city', '').strip():
+        errors.append("Shipping City is required")
+    
+    if not st.session_state.order_data['header'].get('shipping_state', '').strip():
+        errors.append("Shipping State is required")
+    
+    if not st.session_state.order_data['header'].get('shipping_zip', '').strip():
+        errors.append("Shipping Zip is required")
+    
+    # Check if there are any products
+    grid = st.session_state.order_data['grid']
+    has_products = False
+    total_qty = 0
+    for row in grid:
+        if row.get('SKU', '').strip():
+            has_products = True
+            # Check if any quantities are entered
+            for size in ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL']:
+                try:
+                    qty = int(float(row.get(size, 0) or 0))
+                    total_qty += qty
+                except (ValueError, TypeError):
+                    pass
+    
+    if not has_products:
+        errors.append("At least one product (SKU) must be added")
+    elif total_qty == 0:
+        errors.append("At least one quantity must be entered for products")
+    
+    # Check decoration method is selected (for New Design)
+    if st.session_state.order_data['decoration']['design_type'] == 'New Design':
+        if not st.session_state.order_data['decoration'].get('method'):
+            errors.append("Decoration Method is required for New Design")
+    
+    # Warnings (non-blocking)
+    if not st.session_state.order_data['header'].get('ship_date'):
+        warnings.append("Ship Date is not set")
+    
+    if not st.session_state.order_data['header'].get('drop_dead_date'):
+        warnings.append("Drop Dead Date is not set")
+    
+    return errors, warnings
+
 if st.button("Generate ShopWorks Export", type="primary"):
+    # Validate before submission
+    errors, warnings = validate_order_before_submission()
+    
+    if errors:
+        st.error("❌ **Cannot submit order. Please fix the following errors:**")
+        for error in errors:
+            st.error(f"  • {error}")
+        st.stop()
+    
+    if warnings:
+        st.warning("⚠️ **Warnings (order can still be submitted):**")
+        for warning in warnings:
+            st.warning(f"  • {warning}")
+    
     export_df = pivot_grid_to_line_items(st.session_state.order_data['grid'])
     
     if not export_df.empty:
