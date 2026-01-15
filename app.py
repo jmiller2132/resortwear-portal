@@ -424,7 +424,7 @@ def calculate_product_pricing(grid_list, method, pricing_tier, total_units):
     return total_product_price
 
 # Main App Title
-st.title("👕 Eagle ResortWear Portal 🦅")
+st.title("👕 Eagle Resort Wear Portal 🦅")
 # Link to Google Sheets
 SHEETS_LINK = "https://docs.google.com/spreadsheets/d/14DYELQWKuQefjFEpTaltaS5YHhXeiIhr-QJ327mGwt0/edit?usp=sharing"
 st.markdown(f"📊 [View/Edit Data Sheets]({SHEETS_LINK})")
@@ -437,54 +437,149 @@ st.header("Order")
 col_rep, col_cust = st.columns(2)
 
 with col_rep:
-    # Sales Rep Dropdown
+    # Sales Rep - Get list of existing sales reps
     if not salesreps_df.empty and 'SalesRep' in salesreps_df.columns:
-        sales_reps = salesreps_df['SalesRep'].unique().tolist()
+        sales_reps = sorted(salesreps_df['SalesRep'].unique().tolist())
     else:
         # Fallback: extract from customers or use default
-        sales_reps = customers_df['SalesRep'].unique().tolist() if 'SalesRep' in customers_df.columns else ['Rep 1', 'Rep 2', 'Rep 3']
+        sales_reps = sorted(customers_df['SalesRep'].unique().tolist()) if 'SalesRep' in customers_df.columns else ['Rep 1', 'Rep 2', 'Rep 3']
     
-    selected_rep = st.selectbox(
-        "Sales Rep",
-        options=[''] + sales_reps,
-        index=0 if st.session_state.order_data['header']['sales_rep'] is None else (sales_reps.index(st.session_state.order_data['header']['sales_rep']) + 1 if st.session_state.order_data['header']['sales_rep'] in sales_reps else 0),
-        key='sales_rep_select'
-    )
+    # Initialize sales rep mode if not exists
+    if 'sales_rep_mode' not in st.session_state:
+        st.session_state.sales_rep_mode = 'select'
+    
+    # Sales Rep selection mode
+    if st.session_state.sales_rep_mode == 'select':
+        rep_options = [''] + sales_reps + ['--- Add New ---']
+        current_rep = st.session_state.order_data['header']['sales_rep'] or ''
+        if current_rep in sales_reps:
+            rep_index = sales_reps.index(current_rep) + 1
+        else:
+            rep_index = 0
+        
+        selected_rep_option = st.selectbox(
+            "Sales Rep",
+            options=rep_options,
+            index=rep_index,
+            key='sales_rep_select'
+        )
+        
+        if selected_rep_option == '--- Add New ---':
+            st.session_state.sales_rep_mode = 'new'
+            selected_rep = ''
+        else:
+            selected_rep = selected_rep_option if selected_rep_option else None
+    else:
+        # New sales rep mode - text input
+        new_rep = st.text_input(
+            "Sales Rep (New)",
+            value=st.session_state.order_data['header']['sales_rep'] or '',
+            key='sales_rep_new_input'
+        )
+        selected_rep = new_rep.strip() if new_rep.strip() else None
+        
+        # Button to switch back to select mode
+        if st.button("← Select from list", key='sales_rep_back'):
+            st.session_state.sales_rep_mode = 'select'
+            st.rerun()
+    
     st.session_state.order_data['header']['sales_rep'] = selected_rep if selected_rep else None
 
 with col_cust:
-    # Customer Dropdown (filtered by Sales Rep - only show if Sales Rep is selected)
-    # Use container to stabilize layout
+    # Customer - Check if sales rep is new (not in list)
+    current_rep = st.session_state.order_data['header']['sales_rep']
+    is_new_rep = current_rep and current_rep not in sales_reps
+    
+    # Customer Dropdown (filtered by Sales Rep)
     customer_container = st.container()
     with customer_container:
-        if selected_rep:
-            available_customers = get_customers_for_rep(selected_rep)
+        if current_rep and not is_new_rep:
+            # Sales rep exists in list, get associated customers
+            available_customers = get_customers_for_rep(current_rep)
+        elif is_new_rep:
+            # New sales rep - no customers available
+            available_customers = []
         else:
-            available_customers = []  # Don't show customers if no Sales Rep selected
+            # No sales rep selected
+            available_customers = []
         
-        if available_customers:
-            selected_customer = st.selectbox(
-                "Customer",
-                options=[''] + available_customers,
-                index=0 if st.session_state.order_data['header']['customer'] is None else (available_customers.index(st.session_state.order_data['header']['customer']) + 1 if st.session_state.order_data['header']['customer'] in available_customers else 0),
-                key='customer_select'
-            )
-        else:
+        # Initialize customer mode if not exists
+        if 'customer_mode' not in st.session_state:
+            st.session_state.customer_mode = 'select'
+        
+        # Show message if new sales rep
+        if is_new_rep:
+            st.info("No associated customers available for new sales rep.")
             selected_customer = None
-            # Use placeholder to maintain layout height
-            st.selectbox("Customer", options=[''], disabled=True, key='customer_select_empty')
+            st.session_state.customer_mode = 'new'  # Force new mode for new rep
+        elif available_customers:
+            # Customer selection mode
+            if st.session_state.customer_mode == 'select':
+                customer_options = [''] + available_customers + ['--- Add New ---']
+                current_customer = st.session_state.order_data['header']['customer'] or ''
+                if current_customer in available_customers:
+                    cust_index = available_customers.index(current_customer) + 1
+                else:
+                    cust_index = 0
+                
+                selected_customer_option = st.selectbox(
+                    "Customer",
+                    options=customer_options,
+                    index=cust_index,
+                    key='customer_select'
+                )
+                
+                if selected_customer_option == '--- Add New ---':
+                    st.session_state.customer_mode = 'new'
+                    selected_customer = ''
+                else:
+                    selected_customer = selected_customer_option if selected_customer_option else None
+            else:
+                # New customer mode - text input
+                new_customer = st.text_input(
+                    "Customer (New)",
+                    value=st.session_state.order_data['header']['customer'] or '',
+                    key='customer_new_input'
+                )
+                selected_customer = new_customer.strip() if new_customer.strip() else None
+                
+                # Button to switch back to select mode
+                if st.button("← Select from list", key='customer_back'):
+                    st.session_state.customer_mode = 'select'
+                    st.rerun()
+        else:
+            # No customers available - show text input for new customer
+            if st.session_state.customer_mode == 'select':
+                st.session_state.customer_mode = 'new'
+            
+            new_customer = st.text_input(
+                "Customer (New)",
+                value=st.session_state.order_data['header']['customer'] or '',
+                key='customer_new_input'
+            )
+            selected_customer = new_customer.strip() if new_customer.strip() else None
     
-    # Auto-fill address when customer is selected
+    # Auto-fill address when customer is selected (only if customer exists in list)
     if selected_customer:
         prev_customer = st.session_state.order_data['header'].get('customer')
+        is_new_customer = selected_customer not in available_customers
+        
         if selected_customer != prev_customer:
-            # Customer changed, update address
-            addr1, addr2, city, state, zip_code = get_customer_address(selected_customer)
-            st.session_state.order_data['header']['shipping_address1'] = addr1
-            st.session_state.order_data['header']['shipping_address2'] = addr2
-            st.session_state.order_data['header']['shipping_city'] = city
-            st.session_state.order_data['header']['shipping_state'] = state
-            st.session_state.order_data['header']['shipping_zip'] = zip_code
+            if is_new_customer:
+                # New customer - clear address fields
+                st.session_state.order_data['header']['shipping_address1'] = ''
+                st.session_state.order_data['header']['shipping_address2'] = ''
+                st.session_state.order_data['header']['shipping_city'] = ''
+                st.session_state.order_data['header']['shipping_state'] = ''
+                st.session_state.order_data['header']['shipping_zip'] = ''
+            else:
+                # Existing customer - update address
+                addr1, addr2, city, state, zip_code = get_customer_address(selected_customer)
+                st.session_state.order_data['header']['shipping_address1'] = addr1
+                st.session_state.order_data['header']['shipping_address2'] = addr2
+                st.session_state.order_data['header']['shipping_city'] = city
+                st.session_state.order_data['header']['shipping_state'] = state
+                st.session_state.order_data['header']['shipping_zip'] = zip_code
         st.session_state.order_data['header']['customer'] = selected_customer
     else:
         st.session_state.order_data['header']['customer'] = None
