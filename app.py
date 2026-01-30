@@ -1647,7 +1647,6 @@ else:
 
     design1_colors = st.text_area("Requested Colors", value=st.session_state.order_data['decoration']['design1_colors'], key='design1_colors', height=60)
     
-    # Update session state based on checkbox BEFORE processing colors
     design1_let_designers_pick = st.checkbox(
         "Let Designers Pick",
         value=st.session_state.order_data['decoration']['design1_let_designers_pick'],
@@ -1655,14 +1654,21 @@ else:
     )
     st.session_state.order_data['decoration']['design1_let_designers_pick'] = design1_let_designers_pick
     
-    if design1_let_designers_pick:
-        st.session_state.order_data['decoration']['design1_colors'] = "Let designers pick colors"
+    # When checked: append "Let designers pick" to whatever is in the field (or only that text if empty)
+    suffix = "Let designers pick"
+    current = (design1_colors or "").strip()
+    if current == suffix:
+        user_part = ""
+    elif current.endswith("\n" + suffix):
+        user_part = current[:-len("\n" + suffix)].strip()
+    elif current.endswith(suffix):
+        user_part = current[:-len(suffix)].strip()
     else:
-        # Only update if it's currently set to "Let designers pick colors" (don't overwrite user input)
-        if st.session_state.order_data['decoration']['design1_colors'] == "Let designers pick colors":
-            st.session_state.order_data['decoration']['design1_colors'] = ""
-        else:
-            st.session_state.order_data['decoration']['design1_colors'] = design1_colors
+        user_part = current
+    if design1_let_designers_pick:
+        st.session_state.order_data['decoration']['design1_colors'] = (user_part + "\n" + suffix).strip() if user_part else suffix
+    else:
+        st.session_state.order_data['decoration']['design1_colors'] = user_part
 
     # Upcharge options for Design 1
     if decoration_method == 'Embroidery':
@@ -1729,7 +1735,6 @@ else:
             
             design2_colors = st.text_area("Requested Colors", value=st.session_state.order_data['decoration']['design2_colors'], key='design2_colors', height=60)
             
-            # Update session state based on checkbox BEFORE processing colors
             design2_let_designers_pick = st.checkbox(
                 "Let Designers Pick",
                 value=st.session_state.order_data['decoration']['design2_let_designers_pick'],
@@ -1737,14 +1742,20 @@ else:
             )
             st.session_state.order_data['decoration']['design2_let_designers_pick'] = design2_let_designers_pick
             
-            if design2_let_designers_pick:
-                st.session_state.order_data['decoration']['design2_colors'] = "Let designers pick colors"
+            suffix2 = "Let designers pick"
+            current2 = (design2_colors or "").strip()
+            if current2 == suffix2:
+                user_part2 = ""
+            elif current2.endswith("\n" + suffix2):
+                user_part2 = current2[:-len("\n" + suffix2)].strip()
+            elif current2.endswith(suffix2):
+                user_part2 = current2[:-len(suffix2)].strip()
             else:
-                # Only update if it's currently set to "Let designers pick colors" (don't overwrite user input)
-                if st.session_state.order_data['decoration']['design2_colors'] == "Let designers pick colors":
-                    st.session_state.order_data['decoration']['design2_colors'] = ""
-                else:
-                    st.session_state.order_data['decoration']['design2_colors'] = design2_colors
+                user_part2 = current2
+            if design2_let_designers_pick:
+                st.session_state.order_data['decoration']['design2_colors'] = (user_part2 + "\n" + suffix2).strip() if user_part2 else suffix2
+            else:
+                st.session_state.order_data['decoration']['design2_colors'] = user_part2
             
             design2_premium_4color = st.checkbox(
                 "Premium 4-Color (+$2.00/pc)",
