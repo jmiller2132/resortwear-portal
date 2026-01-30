@@ -1645,11 +1645,11 @@ else:
     design1_description = st.text_area("Design Details", value=st.session_state.order_data['decoration']['design1_description'], key='design1_description', height=80)
     st.session_state.order_data['decoration']['design1_description'] = design1_description
 
-    # Key includes checkbox state so text_area re-initializes with appended "Let designers pick" when toggled
+    # Key uses opposite of checkbox so the right value displays (checked -> "Let designers pick", unchecked -> user text only)
     design1_colors = st.text_area(
         "Requested Colors",
         value=st.session_state.order_data['decoration']['design1_colors'],
-        key=f'design1_colors_{st.session_state.order_data["decoration"]["design1_let_designers_pick"]}',
+        key=f'design1_colors_{not st.session_state.order_data["decoration"]["design1_let_designers_pick"]}',
         height=60
     )
 
@@ -1671,6 +1671,7 @@ else:
         user_part = current[:-len(suffix)].strip()
     else:
         user_part = current
+    # Checked = show "Let designers pick" in field; unchecked = do not
     if design1_let_designers_pick:
         st.session_state.order_data['decoration']['design1_colors'] = (user_part + "\n" + suffix).strip() if user_part else suffix
     else:
@@ -1700,15 +1701,17 @@ else:
     )
     st.session_state.order_data['decoration']['art_setup_hours'] = art_setup_hours
 
-    # File Upload for Design Assets
-    uploaded_file = st.file_uploader(
+    # File Upload for Design Assets (multiple files)
+    uploaded_files = st.file_uploader(
         "Upload Design Files (Images, PDFs, Vector Art)",
         type=['png', 'jpg', 'jpeg', 'pdf', 'svg', 'eps', 'ai'],
         key='design_file_upload',
-        help="Supported formats: PNG, JPG, JPEG, PDF, SVG, EPS, AI"
+        accept_multiple_files=True,
+        help="Supported formats: PNG, JPG, JPEG, PDF, SVG, EPS, AI. You can select multiple files."
     )
-    if uploaded_file is not None:
-        st.success(f"File uploaded: {uploaded_file.name} ({uploaded_file.size} bytes)")
+    if uploaded_files:
+        for f in uploaded_files:
+            st.success(f"📎 **{f.name}** ({f.size:,} bytes)")
 
     # Design 2 (only for Screenprint)
     if decoration_method == 'Screenprint':
@@ -1742,7 +1745,7 @@ else:
             design2_colors = st.text_area(
                 "Requested Colors",
                 value=st.session_state.order_data['decoration']['design2_colors'],
-                key=f'design2_colors_{st.session_state.order_data["decoration"]["design2_let_designers_pick"]}',
+                key=f'design2_colors_{not st.session_state.order_data["decoration"]["design2_let_designers_pick"]}',
                 height=60
             )
 
