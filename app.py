@@ -1645,16 +1645,22 @@ else:
     design1_description = st.text_area("Design Details", value=st.session_state.order_data['decoration']['design1_description'], key='design1_description', height=80)
     st.session_state.order_data['decoration']['design1_description'] = design1_description
 
-    design1_colors = st.text_area("Requested Colors", value=st.session_state.order_data['decoration']['design1_colors'], key='design1_colors', height=60)
-    
+    # Key includes checkbox state so text_area re-initializes with appended "Let designers pick" when toggled
+    design1_colors = st.text_area(
+        "Requested Colors",
+        value=st.session_state.order_data['decoration']['design1_colors'],
+        key=f'design1_colors_{st.session_state.order_data["decoration"]["design1_let_designers_pick"]}',
+        height=60
+    )
+
     design1_let_designers_pick = st.checkbox(
         "Let Designers Pick",
         value=st.session_state.order_data['decoration']['design1_let_designers_pick'],
         key='design1_let_designers_pick_checkbox'
     )
     st.session_state.order_data['decoration']['design1_let_designers_pick'] = design1_let_designers_pick
-    
-    # When checked: append "Let designers pick" to whatever is in the field (or only that text if empty)
+
+    # When checked: append "Let designers pick" to whatever is in the field (or only that if empty)
     suffix = "Let designers pick"
     current = (design1_colors or "").strip()
     if current == suffix:
@@ -1669,8 +1675,6 @@ else:
         st.session_state.order_data['decoration']['design1_colors'] = (user_part + "\n" + suffix).strip() if user_part else suffix
     else:
         st.session_state.order_data['decoration']['design1_colors'] = user_part
-    # Sync widget state so text_area shows the updated value on next run
-    st.session_state['design1_colors'] = st.session_state.order_data['decoration']['design1_colors']
 
     # Upcharge options for Design 1
     if decoration_method == 'Embroidery':
@@ -1734,16 +1738,21 @@ else:
             
             design2_description = st.text_area("Design Details", value=st.session_state.order_data['decoration']['design2_description'], key='design2_description', height=80)
             st.session_state.order_data['decoration']['design2_description'] = design2_description
-            
-            design2_colors = st.text_area("Requested Colors", value=st.session_state.order_data['decoration']['design2_colors'], key='design2_colors', height=60)
-            
+
+            design2_colors = st.text_area(
+                "Requested Colors",
+                value=st.session_state.order_data['decoration']['design2_colors'],
+                key=f'design2_colors_{st.session_state.order_data["decoration"]["design2_let_designers_pick"]}',
+                height=60
+            )
+
             design2_let_designers_pick = st.checkbox(
                 "Let Designers Pick",
                 value=st.session_state.order_data['decoration']['design2_let_designers_pick'],
                 key='design2_let_designers_pick_checkbox'
             )
             st.session_state.order_data['decoration']['design2_let_designers_pick'] = design2_let_designers_pick
-            
+
             suffix2 = "Let designers pick"
             current2 = (design2_colors or "").strip()
             if current2 == suffix2:
@@ -1758,7 +1767,6 @@ else:
                 st.session_state.order_data['decoration']['design2_colors'] = (user_part2 + "\n" + suffix2).strip() if user_part2 else suffix2
             else:
                 st.session_state.order_data['decoration']['design2_colors'] = user_part2
-            st.session_state['design2_colors'] = st.session_state.order_data['decoration']['design2_colors']
             design2_premium_4color = st.checkbox(
                 "Premium 4-Color (+$2.00/pc)",
                 value=st.session_state.order_data['decoration']['design2_premium_4color'],
