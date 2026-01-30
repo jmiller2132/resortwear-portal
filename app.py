@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from io import StringIO
+from io import StringIO, BytesIO
 from datetime import date, datetime
 import re
 import uuid
@@ -72,6 +72,8 @@ if 'show_order_review' not in st.session_state:
     st.session_state.show_order_review = False
 if 'order_submitted' not in st.session_state:
     st.session_state.order_submitted = False
+if 'pending_clear_new_order' not in st.session_state:
+    st.session_state.pending_clear_new_order = False
 
 # Base URL for Google Sheets CSV export
 # NOTE: This method requires the Google Sheet to be publicly accessible
@@ -543,6 +545,118 @@ def load_order_by_id(order_id):
     
     return None
 
+def get_empty_order_data():
+    """Return a fresh order_data structure (sales_rep from authenticated rep)."""
+    rep = st.session_state.get('authenticated_rep')
+    return {
+        'header': {
+            'sales_rep': rep,
+            'customer': None,
+            'order_date': date.today(),
+            'ship_date': None,
+            'drop_dead_date': None,
+            'po_number': '',
+            'tax_status': 'Taxable',
+            'tags': 'No',
+            'delivery_method': 'Standard Ground Shipping',
+            'notes': '',
+            'shipping_address1': '',
+            'shipping_address2': '',
+            'shipping_city': '',
+            'shipping_state': '',
+            'shipping_zip': '',
+            'billing_address1': '',
+            'billing_address2': '',
+            'billing_city': '',
+            'billing_state': '',
+            'billing_zip': '',
+            'same_as_shipping': False
+        },
+        'grid': [],
+        'decoration': {
+            'design_type': 'New Design',
+            'reference_order_number': '',
+            'method': 'Screenprint',
+            'design1_number': '',
+            'design1_location': '',
+            'design1_description': '',
+            'design1_colors': '',
+            'design1_let_designers_pick': False,
+            'design2_number': '',
+            'design2_location': '',
+            'design2_description': '',
+            'design2_colors': '',
+            'design2_let_designers_pick': False,
+            'design2_premium_4color': False,
+            'has_second_design': False,
+            'confetti': False,
+            'premium_4color': False,
+            'art_setup_hours': 0.0
+        }
+    }
+
+def _s(x):
+    """Return stripped non-None string for 'has content' checks."""
+    if x is None:
+        return ''
+    return str(x).strip()
+
+def order_data_has_content(d):
+    """Return True if the form has any user-entered information."""
+    if not d or not isinstance(d, dict):
+        return False
+    h = d.get('header') or {}
+    g = d.get('grid') or []
+    dec = d.get('decoration') or {}
+
+    if _s(h.get('customer')):
+        return True
+    if _s(h.get('po_number')):
+        return True
+    if _s(h.get('notes')):
+        return True
+    for k in ['shipping_address1', 'shipping_address2', 'shipping_city', 'shipping_state', 'shipping_zip',
+              'billing_address1', 'billing_address2', 'billing_city', 'billing_state', 'billing_zip']:
+        if _s(h.get(k)):
+            return True
+    if h.get('ship_date') is not None or h.get('drop_dead_date') is not None:
+        return True
+    if _s(h.get('delivery_method')) and h.get('delivery_method') != 'Standard Ground Shipping':
+        return True
+    if _s(h.get('tax_status')) and h.get('tax_status') != 'Taxable':
+        return True
+    if _s(h.get('tags')) and h.get('tags') != 'No':
+        return True
+
+    if len(g) > 0:
+        return True
+    for row in g:
+        if _s(row.get('SKU')):
+            return True
+        for size in ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL']:
+            if (row.get(size) or 0) != 0:
+                return True
+
+    if _s(dec.get('reference_order_number')):
+        return True
+    if dec.get('design_type') == 'Re-Order':
+        return True
+    if _s(dec.get('method')) and dec.get('method') != 'Screenprint':
+        return True
+    for k in ['design1_number', 'design1_location', 'design1_description', 'design1_colors',
+              'design2_number', 'design2_location', 'design2_description', 'design2_colors']:
+        if _s(dec.get(k)):
+            return True
+    if dec.get('has_second_design'):
+        return True
+    if dec.get('confetti') or dec.get('premium_4color') or dec.get('design2_premium_4color'):
+        return True
+    ah = dec.get('art_setup_hours')
+    if ah is not None and (ah != 0 and ah != 0.0):
+        return True
+
+    return False
+
 def get_customers_for_rep(sales_rep):
     """Get list of customers assigned to a sales rep, sorted A-Z"""
     if customers_df.empty or sales_rep is None:
@@ -646,6 +760,73 @@ def get_size_upcharge(size):
         '4XL': 5.0
     }
     return size_upcharges.get(size, 0.0)
+
+def order_type_from_method_tags(method, tags):
+    """OrderType: Tags No → 11,21,25,59,59; Tags Yes → 11.5,21.5,25.5,59,59 (Sub/Leather add Design 11974 Front)."""
+    tags_yes = str(tags or '').strip().lower() == 'yes'
+    method = (method or '').strip()
+    mapping_no = {
+        'Screenprint': 11,
+        'Embroidery': 21,
+        'Applique': 25,
+        'Sublimated Patches': 59,
+        'Leather Patches': 59,
+    }
+    mapping_yes = {
+        'Screenprint': 11.5,
+        'Embroidery': 21.5,
+        'Applique': 25.5,
+        'Sublimated Patches': 59,
+        'Leather Patches': 59,
+    }
+    m = mapping_yes if tags_yes else mapping_no
+    return m.get(method, '')
+
+def get_unit_price(sku, size, method, pricing_tier, order_data):
+    """Per-unit price for a given SKU/size (base + size upcharge + design upcharges)."""
+    base = get_base_price(sku, method, pricing_tier)
+    up = get_size_upcharge(size)
+    dec = (order_data or {}).get('decoration') or {}
+    method_key = (method or '').strip()
+    has_second = dec.get('has_second_design') and method_key == 'Screenprint'
+    confetti = dec.get('confetti') and method_key == 'Embroidery'
+    premium = dec.get('premium_4color') and method_key == 'Screenprint'
+    design2_premium = dec.get('design2_premium_4color') and has_second
+    extra = 0.0
+    if confetti:
+        extra += 2.0
+    if premium:
+        extra += 2.0
+    if has_second:
+        extra += 3.50
+    if design2_premium:
+        extra += 2.0
+    return base + up + extra
+
+def get_export_designs_locations(order_data):
+    """(Location1, Design1, Location2, Design2, Location3, Design3). Tags+Sub/Leather add Design 11974, Front. Re-Order: Design1=Design Details."""
+    o = order_data or {}
+    dec = o.get('decoration') or {}
+    h = o.get('header') or {}
+    design_type = (dec.get('design_type') or 'New Design').strip()
+    tags = str(h.get('tags', '') or '').strip()
+    method = (dec.get('method') or '').strip()
+    tags_yes = tags.lower() == 'yes'
+    add_tag_design = tags_yes and method in ('Sublimated Patches', 'Leather Patches')
+
+    if design_type == 'Re-Order':
+        L1, D1 = '', (dec.get('design1_description') or '').strip()
+        L2, D2, L3, D3 = '', '', '', ''
+        return L1, D1, L2, D2, L3, D3
+
+    L1 = (dec.get('design1_location') or '').strip()
+    D1 = (dec.get('design1_number') or '').strip() or (dec.get('design1_description') or '').strip()
+    L2 = (dec.get('design2_location') or '').strip()
+    D2 = (dec.get('design2_number') or '').strip() or (dec.get('design2_description') or '').strip()
+    L3, D3 = '', ''
+    if add_tag_design:
+        L3, D3 = 'Front', '11974'
+    return L1, D1, L2, D2, L3, D3
 
 def calculate_product_pricing(grid_list, method, pricing_tier, total_units):
     """Calculate total product pricing based on grid, method, tier, and options"""
@@ -933,12 +1114,21 @@ with col_nav:
         st.session_state.view_mode = 'new_order'
         st.session_state.show_order_review = False
         st.session_state.order_submitted = False
+        if order_data_has_content(st.session_state.order_data):
+            st.session_state.pending_clear_new_order = True
+        else:
+            st.session_state.order_data = get_empty_order_data()
+            st.session_state.pending_clear_new_order = False
+            for k in ['export_excel', 'export_submission_number', 'export_line_count']:
+                if k in st.session_state:
+                    del st.session_state[k]
         st.rerun()
     
     if st.button("📋 My Orders", key='nav_my_orders', use_container_width=True):
         st.session_state.view_mode = 'my_orders'
         st.session_state.show_order_review = False
         st.session_state.order_submitted = False
+        st.session_state.pending_clear_new_order = False
         st.rerun()
     
     # Conditionally show Google Sheets link based on rep permissions
@@ -947,6 +1137,28 @@ with col_nav:
         st.markdown(f"📊 [View/Edit Data Sheets]({SHEETS_LINK})")
 
 st.markdown("---")
+
+# "New Order" confirmation when form has content
+if st.session_state.view_mode == 'new_order' and st.session_state.pending_clear_new_order:
+    st.warning("You have entered information. Clear the form and start new?")
+    col_yes, col_cancel, _ = st.columns([1, 1, 2])
+    with col_yes:
+        if st.button("Yes, clear form", key='confirm_clear_new_order'):
+            st.session_state.order_data = get_empty_order_data()
+            st.session_state.pending_clear_new_order = False
+            st.session_state.show_order_review = False
+            st.session_state.order_submitted = False
+            if 'viewing_order_id' in st.session_state:
+                del st.session_state.viewing_order_id
+            for k in ['export_excel', 'export_submission_number', 'export_line_count']:
+                if k in st.session_state:
+                    del st.session_state[k]
+            st.rerun()
+    with col_cancel:
+        if st.button("Cancel", key='cancel_clear_new_order'):
+            st.session_state.pending_clear_new_order = False
+            st.rerun()
+    st.stop()
 
 # My Orders View
 if st.session_state.view_mode == 'my_orders':
@@ -1755,43 +1967,180 @@ st.write(f"**TOTAL:** ${grand_total:.2f}")
 
 st.markdown("---")
 
-# SHOPWORKS EXPORT SECTION
-st.header("Export to ShopWorks OnSite")
+# ORDER EXPORT (EXCEL)
+st.header("Order Export")
 
-def pivot_grid_to_line_items(grid_list):
-    """Convert size matrix (wide) to line items (long format)"""
-    if not grid_list:
-        return pd.DataFrame()
-    
-    line_items = []
-    size_cols_all = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL']
-    size_index_map = {'XS': 0, 'S': 1, 'M': 2, 'L': 3, 'XL': 4, '2XL': 5, '3XL': 6, '4XL': 7}
-    
-    for row in grid_list:
+def _fmt_date(d):
+    if d is None:
+        return ''
+    if hasattr(d, 'strftime'):
+        return d.strftime('%Y-%m-%d')
+    return str(d)
+
+def build_detailed_export_rows(order_data):
+    """List of dicts: Location1, Design1, ..., Style, ProductName, Size, Color, Quantity, UnitPrice, OrderType."""
+    grid = (order_data or {}).get('grid') or []
+    dec = (order_data or {}).get('decoration') or {}
+    h = (order_data or {}).get('header') or {}
+    design_type = (dec.get('design_type') or 'New Design').strip()
+    method = (dec.get('method') or '').strip()
+    tags = str(h.get('tags', '') or '').strip()
+    total_units = sum(
+        int(float(row.get(s, 0) or 0))
+        for row in grid for s in ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL']
+    )
+    tier = calculate_pricing_tier(total_units, method) if method else '36pc'
+    L1, D1, L2, D2, L3, D3 = get_export_designs_locations(order_data)
+    order_type_val = order_type_from_method_tags(method, tags) if design_type == 'New Design' else ''
+
+    rows = []
+    size_cols = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL']
+    for row in grid:
         sku = str(row.get('SKU', '')).strip()
         color = str(row.get('Color', '')).strip()
-        
+        desc = str(row.get('Description', '')).strip()
         if not sku:
             continue
-        
-        for size_col in size_cols_all:
-            qty = row.get(size_col, 0)
+        for size in size_cols:
             try:
-                qty_val = int(float(qty)) if qty else 0
-                if qty_val > 0:
-                    line_items.append({
-                        'CustomerID': st.session_state.order_data['header']['customer'] or '',
-                        'ItemCode': sku,
-                        'ColorCode': color,
-                        'SizeIndex': size_index_map.get(size_col, 0),
-                        'Size': size_col,
-                        'Quantity': qty_val,
-                        'Price': 0.0  # Price would need to be calculated from pricing tiers
-                    })
+                qty = int(float(row.get(size, 0) or 0))
             except (ValueError, TypeError):
-                pass
-    
-    return pd.DataFrame(line_items)
+                qty = 0
+            if qty <= 0:
+                continue
+            unit_price = get_unit_price(sku, size, method, tier, order_data) if method else 0.0
+            rows.append({
+                'Location1': L1, 'Design1': D1, 'Location2': L2, 'Design2': D2, 'Location3': L3, 'Design3': D3,
+                'Style': sku, 'ProductName': desc, 'Size': size, 'Color': color,
+                'Quantity': qty, 'UnitPrice': round(unit_price, 2), 'OrderType': order_type_val,
+            })
+    return rows
+
+def _effective_sku(base_sku, size):
+    if size == '2XL':
+        return f"{base_sku}_2XL"
+    if size == '3XL':
+        return f"{base_sku}_3XL"
+    if size == '4XL':
+        return f"{base_sku}_4XL"
+    return base_sku
+
+def build_consolidated_export_rows(order_data):
+    """List of dicts: SKU, Color, Product Name, S, M, L, XL, 2XL, Other Sizes, Price, Total. 2XL/3XL/4XL → separate SKU rows."""
+    grid = (order_data or {}).get('grid') or []
+    dec = (order_data or {}).get('decoration') or {}
+    method = (dec.get('method') or '').strip()
+    total_units = sum(
+        int(float(row.get(s, 0) or 0))
+        for row in grid for s in ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL']
+    )
+    tier = calculate_pricing_tier(total_units, method) if method else '36pc'
+    size_cols = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL']
+    standard = ['S', 'M', 'L', 'XL', '2XL']
+
+    # Aggregate by (effective_sku, color): { (sku, color): { 'desc': str, 'S':0, 'M':0, ... 'Other':0, 'unit_price': float } }
+    agg = {}
+    for row in grid:
+        sku = str(row.get('SKU', '')).strip()
+        color = str(row.get('Color', '')).strip()
+        desc = str(row.get('Description', '')).strip()
+        if not sku:
+            continue
+        for size in size_cols:
+            try:
+                qty = int(float(row.get(size, 0) or 0))
+            except (ValueError, TypeError):
+                qty = 0
+            if qty <= 0:
+                continue
+            eff = _effective_sku(sku, size)
+            key = (eff, color)
+            if key not in agg:
+                unit = get_unit_price(sku, size, method, tier, order_data) if method else 0.0
+                agg[key] = {
+                    'desc': desc, 'unit_price': unit,
+                    'S': 0, 'M': 0, 'L': 0, 'XL': 0, '2XL': 0, 'Other Sizes': 0,
+                }
+            if size in standard:
+                agg[key][size] += qty
+            else:
+                agg[key]['Other Sizes'] += qty
+
+    out = []
+    for (eff_sku, color), v in sorted(agg.items()):
+        total_qty = v['S'] + v['M'] + v['L'] + v['XL'] + v['2XL'] + v['Other Sizes']
+        total_dollar = round(v['unit_price'] * total_qty, 2)
+        out.append({
+            'SKU': eff_sku, 'Color': color, 'Product Name': v['desc'],
+            'S': v['S'], 'M': v['M'], 'L': v['L'], 'XL': v['XL'], '2XL': v['2XL'], 'Other Sizes': v['Other Sizes'],
+            'Price': round(v['unit_price'], 2), 'Total': total_dollar,
+        })
+    return out
+
+def build_order_excel(order_data):
+    """Excel bytes: Sheet 'Order' (header + detailed), Sheet 'Consolidated'."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Order"
+
+    h = (order_data or {}).get('header') or {}
+    dec = (order_data or {}).get('decoration') or {}
+    design_type = (dec.get('design_type') or 'New Design').strip()
+
+    # Header section
+    row = 1
+    ws.cell(row, 1, "Customer"); ws.cell(row, 2, h.get('customer') or '')
+    row += 1
+    ws.cell(row, 1, "PO#"); ws.cell(row, 2, h.get('po_number') or '')
+    row += 1
+    ws.cell(row, 1, "Order Date"); ws.cell(row, 2, _fmt_date(h.get('order_date')))
+    row += 1
+    ws.cell(row, 1, "Ship Date"); ws.cell(row, 2, _fmt_date(h.get('ship_date')))
+    row += 1
+    ws.cell(row, 1, "Drop Dead Date"); ws.cell(row, 2, _fmt_date(h.get('drop_dead_date')))
+    row += 1
+    ws.cell(row, 1, "Sales Rep"); ws.cell(row, 2, h.get('sales_rep') or '')
+    row += 1
+    ws.cell(row, 1, "Tax Status"); ws.cell(row, 2, h.get('tax_status') or '')
+    row += 1
+    ws.cell(row, 1, "Tags"); ws.cell(row, 2, h.get('tags') or '')
+    row += 1
+    ws.cell(row, 1, "Delivery Method"); ws.cell(row, 2, h.get('delivery_method') or '')
+    row += 1
+    if design_type == 'Re-Order':
+        ws.cell(row, 1, "Reference Order #"); ws.cell(row, 2, dec.get('reference_order_number') or '')
+        row += 1
+    ws.cell(row, 1, "Notes"); ws.cell(row, 2, h.get('notes') or '')
+    row += 1
+    row += 1  # blank before table
+
+    # Detailed table
+    det = build_detailed_export_rows(order_data)
+    headers = ['Location1', 'Design1', 'Location2', 'Design2', 'Location3', 'Design3', 'Style', 'ProductName', 'Size', 'Color', 'Quantity', 'UnitPrice', 'OrderType']
+    for c, hdr in enumerate(headers, 1):
+        ws.cell(row, c, hdr)
+    row += 1
+    for r in det:
+        for c, k in enumerate(headers, 1):
+            ws.cell(row, c, r.get(k, ''))
+        row += 1
+
+    # Consolidated sheet
+    ws2 = wb.create_sheet("Consolidated")
+    cons_headers = ['SKU', 'Color', 'Product Name', 'S', 'M', 'L', 'XL', '2XL', 'Other Sizes', 'Price', 'Total']
+    cons = build_consolidated_export_rows(order_data)
+    for c, hdr in enumerate(cons_headers, 1):
+        ws2.cell(1, c, hdr)
+    for i, r in enumerate(cons, 2):
+        for c, k in enumerate(cons_headers, 1):
+            ws2.cell(i, c, r.get(k, ''))
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
 
 # Validation function before submission
 def validate_order_before_submission():
@@ -2039,28 +2388,18 @@ if st.session_state.show_order_review and not st.session_state.order_submitted:
     
     with col2:
         if st.button("✅ Confirm & Generate Export", type="primary", key='confirm_export'):
-            export_df = pivot_grid_to_line_items(st.session_state.order_data['grid'])
+            det_rows = build_detailed_export_rows(st.session_state.order_data)
             
-            if not export_df.empty:
-                # Generate submission number
+            if det_rows:
                 submission_number = generate_submission_number()
-                
-                # Save order to history
                 save_order_to_sheet(st.session_state.order_data, status='Submitted', submission_number=submission_number)
-                
-                # Log order submission
                 order_details = f"PO#: {st.session_state.order_data['header'].get('po_number', 'N/A')}, Customer: {st.session_state.order_data['header'].get('customer', 'N/A')}"
                 log_event("ORDER_SUBMITTED", "Success", order_details, submission_number)
                 
-                # Convert to CSV
-                csv_buffer = StringIO()
-                export_df.to_csv(csv_buffer, index=False)
-                csv_string = csv_buffer.getvalue()
-                
-                # Store CSV in session state for download
-                st.session_state.export_csv = csv_string
+                excel_bytes = build_order_excel(st.session_state.order_data)
+                st.session_state.export_excel = excel_bytes
                 st.session_state.export_submission_number = submission_number
-                st.session_state.export_line_count = len(export_df)
+                st.session_state.export_line_count = len(det_rows)
                 st.session_state.show_order_review = False
                 st.session_state.order_submitted = True
                 st.rerun()
@@ -2075,77 +2414,23 @@ if st.session_state.get('order_submitted', False):
     st.success(f"✅ **Order submitted successfully!** Submission Number: **{st.session_state.get('export_submission_number', 'N/A')}**")
     st.info(f"Export generated with {st.session_state.get('export_line_count', 0)} line items.")
     
-    if 'export_csv' in st.session_state:
+    if 'export_excel' in st.session_state:
         st.download_button(
-            label="📥 Download CSV Export",
-            data=st.session_state.export_csv,
-            file_name=f"shopworks_export_{st.session_state.export_submission_number}.csv",
-            mime="text/csv",
-            key='download_shopworks_csv',
+            label="📥 Download Excel Export",
+            data=st.session_state.export_excel,
+            file_name=f"eagle_order_{st.session_state.export_submission_number}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key='download_excel_export',
             type="primary"
         )
-        
-        # Display preview
-        export_df_preview = pd.read_csv(StringIO(st.session_state.export_csv))
-        with st.expander("📄 Export Preview"):
-            st.dataframe(export_df_preview, use_container_width=True)
     
     if st.button("🔄 Create New Order", key='new_order'):
-        # Reset order data
-        st.session_state.order_data = {
-            'header': {
-                'sales_rep': st.session_state.authenticated_rep,
-                'customer': None,
-                'order_date': date.today(),
-                'ship_date': None,
-                'drop_dead_date': None,
-                'po_number': '',
-                'tax_status': 'Taxable',
-                'tags': 'No',
-                'delivery_method': 'Standard Ground Shipping',
-                'notes': '',
-                'shipping_address1': '',
-                'shipping_address2': '',
-                'shipping_city': '',
-                'shipping_state': '',
-                'shipping_zip': '',
-                'billing_address1': '',
-                'billing_address2': '',
-                'billing_city': '',
-                'billing_state': '',
-                'billing_zip': '',
-                'same_as_shipping': False
-            },
-            'grid': [],
-            'decoration': {
-                'design_type': 'New Design',
-                'reference_order_number': '',
-                'method': 'Screenprint',
-                'design1_number': '',
-                'design1_location': '',
-                'design1_description': '',
-                'design1_colors': '',
-                'design1_let_designers_pick': False,
-                'design2_number': '',
-                'design2_location': '',
-                'design2_description': '',
-                'design2_colors': '',
-                'design2_let_designers_pick': False,
-                'design2_premium_4color': False,
-                'has_second_design': False,
-                'confetti': False,
-                'premium_4color': False,
-                'art_setup_hours': 0.0
-            }
-        }
+        st.session_state.order_data = get_empty_order_data()
         st.session_state.show_order_review = False
         st.session_state.order_submitted = False
-        if 'export_csv' in st.session_state:
-            del st.session_state.export_csv
-        if 'export_submission_number' in st.session_state:
-            del st.session_state.export_submission_number
-        if 'export_line_count' in st.session_state:
-            del st.session_state.export_line_count
+        for k in ['export_excel', 'export_submission_number', 'export_line_count']:
+            if k in st.session_state:
+                del st.session_state[k]
         st.rerun()
 
 # Debug section (can be removed in production)
