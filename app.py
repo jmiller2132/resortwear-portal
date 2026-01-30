@@ -1669,6 +1669,8 @@ else:
         st.session_state.order_data['decoration']['design1_colors'] = (user_part + "\n" + suffix).strip() if user_part else suffix
     else:
         st.session_state.order_data['decoration']['design1_colors'] = user_part
+    # Sync widget state so text_area shows the updated value on next run
+    st.session_state['design1_colors'] = st.session_state.order_data['decoration']['design1_colors']
 
     # Upcharge options for Design 1
     if decoration_method == 'Embroidery':
@@ -1756,7 +1758,7 @@ else:
                 st.session_state.order_data['decoration']['design2_colors'] = (user_part2 + "\n" + suffix2).strip() if user_part2 else suffix2
             else:
                 st.session_state.order_data['decoration']['design2_colors'] = user_part2
-            
+            st.session_state['design2_colors'] = st.session_state.order_data['decoration']['design2_colors']
             design2_premium_4color = st.checkbox(
                 "Premium 4-Color (+$2.00/pc)",
                 value=st.session_state.order_data['decoration']['design2_premium_4color'],
