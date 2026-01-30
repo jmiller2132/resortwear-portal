@@ -1645,11 +1645,11 @@ else:
     design1_description = st.text_area("Design Details", value=st.session_state.order_data['decoration']['design1_description'], key='design1_description', height=80)
     st.session_state.order_data['decoration']['design1_description'] = design1_description
 
-    # Key uses opposite of checkbox so the right value displays (checked -> "Let designers pick", unchecked -> user text only)
+    # Key matches checkbox state so text_area re-initializes with correct value when toggled
     design1_colors = st.text_area(
         "Requested Colors",
         value=st.session_state.order_data['decoration']['design1_colors'],
-        key=f'design1_colors_{not st.session_state.order_data["decoration"]["design1_let_designers_pick"]}',
+        key=f'design1_colors_{st.session_state.order_data["decoration"]["design1_let_designers_pick"]}',
         height=60
     )
 
@@ -1745,7 +1745,7 @@ else:
             design2_colors = st.text_area(
                 "Requested Colors",
                 value=st.session_state.order_data['decoration']['design2_colors'],
-                key=f'design2_colors_{not st.session_state.order_data["decoration"]["design2_let_designers_pick"]}',
+                key=f'design2_colors_{st.session_state.order_data["decoration"]["design2_let_designers_pick"]}',
                 height=60
             )
 
