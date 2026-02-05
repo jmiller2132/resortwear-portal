@@ -45,6 +45,25 @@ def inject_beforeunload_warning(has_content):
             height=0
         )
 
+import base64
+
+def trigger_auto_download(file_bytes, filename, mime_type):
+    """Trigger automatic file download using JavaScript."""
+    b64 = base64.b64encode(file_bytes).decode()
+    download_js = f"""
+    <script>
+    (function() {{
+        var link = document.createElement('a');
+        link.href = 'data:{mime_type};base64,{b64}';
+        link.download = '{filename}';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }})();
+    </script>
+    """
+    components.html(download_js, height=0)
+
 # Initialize session state
 if 'order_data' not in st.session_state:
     st.session_state.order_data = {
@@ -1087,19 +1106,29 @@ with col_title:
 
 with col_nav:
     # Navigation buttons
-    if st.button("📝 New Order", key='nav_new_order', use_container_width=True):
-        st.session_state.view_mode = 'new_order'
-        st.session_state.show_order_review = False
-        st.session_state.order_submitted = False
-        if order_data_has_content(st.session_state.order_data):
-            st.session_state.pending_clear_new_order = True
-        else:
-            st.session_state.order_data = get_empty_order_data()
+    nav_col1, nav_col2 = st.columns(2)
+    with nav_col1:
+        if st.button("📝 New Order", key='nav_new_order', use_container_width=True):
+            st.session_state.view_mode = 'new_order'
+            st.session_state.show_order_review = False
+            st.session_state.order_submitted = False
+            if order_data_has_content(st.session_state.order_data):
+                st.session_state.pending_clear_new_order = True
+            else:
+                st.session_state.order_data = get_empty_order_data()
+                st.session_state.pending_clear_new_order = False
+                for k in ['export_excel', 'export_submission_number', 'export_line_count']:
+                    if k in st.session_state:
+                        del st.session_state[k]
+            st.rerun()
+    
+    with nav_col2:
+        if st.button("📋 My Orders", key='nav_my_orders', use_container_width=True):
+            st.session_state.view_mode = 'my_orders'
+            st.session_state.show_order_review = False
+            st.session_state.order_submitted = False
             st.session_state.pending_clear_new_order = False
-            for k in ['export_excel', 'export_submission_number', 'export_line_count']:
-                if k in st.session_state:
-                    del st.session_state[k]
-        st.rerun()
+            st.rerun()
     
     # Conditionally show Google Sheets link based on rep permissions
     if authenticated_rep_name and can_rep_view_sheets(authenticated_rep_name):
@@ -1131,6 +1160,74 @@ if st.session_state.view_mode == 'new_order' and st.session_state.pending_clear_
         if st.button("Cancel", key='cancel_clear_new_order'):
             st.session_state.pending_clear_new_order = False
             st.rerun()
+    st.stop()
+
+# MY ORDERS VIEW
+if st.session_state.view_mode == 'my_orders':
+    st.header("📋 My Submitted Orders")
+    
+    # Get orders for this rep
+    rep_name = st.session_state.authenticated_rep
+    if 'saved_orders' not in st.session_state:
+        st.session_state.saved_orders = []
+    
+    # Filter to only this rep's submitted orders
+    my_orders = [o for o in st.session_state.saved_orders 
+                 if str(o.get('SalesRep', '')).strip() == str(rep_name).strip() 
+                 and o.get('Status') == 'Submitted']
+    
+    # Sort by created date (newest first)
+    my_orders.sort(key=lambda x: x.get('CreatedDate', ''), reverse=True)
+    
+    if my_orders:
+        st.info(f"Showing {len(my_orders)} submitted order(s) from this session.")
+        
+        for order in my_orders:
+            with st.expander(f"**Order #{order.get('SubmissionNumber', 'N/A')}** - {order.get('Customer', 'Unknown Customer')} - {order.get('CreatedDate', '')}", expanded=False):
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.write(f"**PO Number:** {order.get('PONumber', 'N/A')}")
+                    st.write(f"**Customer:** {order.get('Customer', 'N/A')}")
+                with col2:
+                    st.write(f"**Order Date:** {order.get('OrderDate', 'N/A')}")
+                    st.write(f"**Ship Date:** {order.get('ShipDate', 'N/A')}")
+                with col3:
+                    st.write(f"**Status:** {order.get('Status', 'N/A')}")
+                    st.write(f"**Submitted:** {order.get('CreatedDate', 'N/A')}")
+                
+                # Try to regenerate Excel for download
+                try:
+                    order_data = json.loads(order.get('OrderData', '{}'))
+                    # Restore date objects from ISO format strings
+                    if 'header' in order_data:
+                        for date_field in ['order_date', 'ship_date', 'drop_dead_date']:
+                            if date_field in order_data['header'] and order_data['header'][date_field]:
+                                date_str = order_data['header'][date_field]
+                                if isinstance(date_str, str) and date_str:
+                                    try:
+                                        if 'T' in date_str:
+                                            order_data['header'][date_field] = datetime.fromisoformat(date_str.split('T')[0]).date()
+                                        else:
+                                            order_data['header'][date_field] = datetime.strptime(date_str, '%Y-%m-%d').date()
+                                    except (ValueError, AttributeError):
+                                        pass
+                    
+                    excel_bytes = build_order_excel(order_data)
+                    st.download_button(
+                        label="📥 Download Excel",
+                        data=excel_bytes,
+                        file_name=f"eagle_order_{order.get('SubmissionNumber', 'unknown')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"download_{order.get('OrderID', '')}",
+                    )
+                except Exception as e:
+                    st.caption(f"Could not regenerate Excel: {e}")
+    else:
+        st.info("No submitted orders found in this session.")
+        st.caption("Orders submitted during this session will appear here. Note: Orders are only stored while your browser tab is open.")
+    
+    st.markdown("---")
+    st.caption("**Note:** Orders are currently stored in your browser session only. If you close this tab, order history will be lost. The Excel exports are the permanent record of your orders.")
     st.stop()
 
 
@@ -2274,26 +2371,48 @@ if st.session_state.show_order_review and not st.session_state.order_submitted:
 if st.session_state.get('order_submitted', False):
     st.markdown("---")
     st.success(f"✅ **Order submitted successfully!** Submission Number: **{st.session_state.get('export_submission_number', 'N/A')}**")
-    st.info(f"Export generated with {st.session_state.get('export_line_count', 0)} line items.")
+    st.info(f"Export generated with {st.session_state.get('export_line_count', 0)} line items. Your Excel file should download automatically.")
     
+    # Auto-download the Excel file (only trigger once per submission)
+    if 'export_excel' in st.session_state and not st.session_state.get('auto_download_triggered', False):
+        filename = f"eagle_order_{st.session_state.export_submission_number}.xlsx"
+        trigger_auto_download(
+            st.session_state.export_excel,
+            filename,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        st.session_state.auto_download_triggered = True
+    
+    # Keep manual download button as fallback
     if 'export_excel' in st.session_state:
         st.download_button(
-            label="📥 Download Excel Export",
+            label="📥 Download Excel Again",
             data=st.session_state.export_excel,
             file_name=f"eagle_order_{st.session_state.export_submission_number}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key='download_excel_export',
-            type="primary"
         )
     
-    if st.button("🔄 Create New Order", key='new_order'):
-        st.session_state.order_data = get_empty_order_data()
-        st.session_state.show_order_review = False
-        st.session_state.order_submitted = False
-        for k in ['export_excel', 'export_submission_number', 'export_line_count']:
-            if k in st.session_state:
-                del st.session_state[k]
-        st.rerun()
+    col_new, col_orders, _ = st.columns([1, 1, 2])
+    with col_new:
+        if st.button("🔄 Create New Order", key='new_order'):
+            st.session_state.order_data = get_empty_order_data()
+            st.session_state.show_order_review = False
+            st.session_state.order_submitted = False
+            for k in ['export_excel', 'export_submission_number', 'export_line_count', 'auto_download_triggered']:
+                if k in st.session_state:
+                    del st.session_state[k]
+            st.rerun()
+    
+    with col_orders:
+        if st.button("📋 View My Orders", key='view_orders_after_submit'):
+            st.session_state.view_mode = 'my_orders'
+            st.session_state.show_order_review = False
+            st.session_state.order_submitted = False
+            for k in ['export_excel', 'export_submission_number', 'export_line_count', 'auto_download_triggered']:
+                if k in st.session_state:
+                    del st.session_state[k]
+            st.rerun()
 
 # Debug section (can be removed in production)
 with st.expander("Debug: Session State"):
