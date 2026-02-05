@@ -1645,37 +1645,60 @@ else:
     design1_description = st.text_area("Design Details", value=st.session_state.order_data['decoration']['design1_description'], key='design1_description', height=80)
     st.session_state.order_data['decoration']['design1_description'] = design1_description
 
-    # Key matches checkbox state so text_area re-initializes with correct value when toggled
+    # Read CURRENT checkbox state from widget session state (not order_data which may be stale)
+    suffix = "Let designers pick"
+    current_checkbox_state = st.session_state.get('design1_let_designers_pick_checkbox',
+        st.session_state.order_data['decoration']['design1_let_designers_pick'])
+    
+    # Get stored colors and extract user text (without suffix)
+    stored_colors = (st.session_state.order_data['decoration']['design1_colors'] or "").strip()
+    if stored_colors == suffix:
+        user_text = ""
+    elif stored_colors.endswith("\n" + suffix):
+        user_text = stored_colors[:-len("\n" + suffix)].strip()
+    elif stored_colors.endswith(suffix):
+        user_text = stored_colors[:-len(suffix)].strip()
+    else:
+        user_text = stored_colors
+    
+    # Compute display value: checked = show suffix, unchecked = no suffix
+    if current_checkbox_state:
+        display_value = (user_text + "\n" + suffix).strip() if user_text else suffix
+    else:
+        display_value = user_text
+    
+    # Render text_area with computed value
     design1_colors = st.text_area(
         "Requested Colors",
-        value=st.session_state.order_data['decoration']['design1_colors'],
-        key=f'design1_colors_{st.session_state.order_data["decoration"]["design1_let_designers_pick"]}',
+        value=display_value,
+        key=f'design1_colors_{current_checkbox_state}',
         height=60
     )
 
+    # Render checkbox
     design1_let_designers_pick = st.checkbox(
         "Let Designers Pick",
-        value=st.session_state.order_data['decoration']['design1_let_designers_pick'],
+        value=current_checkbox_state,
         key='design1_let_designers_pick_checkbox'
     )
-    st.session_state.order_data['decoration']['design1_let_designers_pick'] = design1_let_designers_pick
-
-    # When checked: append "Let designers pick" to whatever is in the field (or only that if empty)
-    suffix = "Let designers pick"
-    current = (design1_colors or "").strip()
-    if current == suffix:
-        user_part = ""
-    elif current.endswith("\n" + suffix):
-        user_part = current[:-len("\n" + suffix)].strip()
-    elif current.endswith(suffix):
-        user_part = current[:-len(suffix)].strip()
+    
+    # Extract user text from current input (strip suffix if present)
+    current_input = (design1_colors or "").strip()
+    if current_input == suffix:
+        final_user_text = ""
+    elif current_input.endswith("\n" + suffix):
+        final_user_text = current_input[:-len("\n" + suffix)].strip()
+    elif current_input.endswith(suffix):
+        final_user_text = current_input[:-len(suffix)].strip()
     else:
-        user_part = current
-    # Checked = show "Let designers pick" in field; unchecked = do not
+        final_user_text = current_input
+    
+    # Save to order_data: checked = with suffix, unchecked = without
     if design1_let_designers_pick:
-        st.session_state.order_data['decoration']['design1_colors'] = (user_part + "\n" + suffix).strip() if user_part else suffix
+        st.session_state.order_data['decoration']['design1_colors'] = (final_user_text + "\n" + suffix).strip() if final_user_text else suffix
     else:
-        st.session_state.order_data['decoration']['design1_colors'] = user_part
+        st.session_state.order_data['decoration']['design1_colors'] = final_user_text
+    st.session_state.order_data['decoration']['design1_let_designers_pick'] = design1_let_designers_pick
 
     # Upcharge options for Design 1
     if decoration_method == 'Embroidery':
@@ -1742,34 +1765,60 @@ else:
             design2_description = st.text_area("Design Details", value=st.session_state.order_data['decoration']['design2_description'], key='design2_description', height=80)
             st.session_state.order_data['decoration']['design2_description'] = design2_description
 
+            # Read CURRENT checkbox state from widget session state
+            suffix2 = "Let designers pick"
+            current_checkbox_state2 = st.session_state.get('design2_let_designers_pick_checkbox',
+                st.session_state.order_data['decoration']['design2_let_designers_pick'])
+            
+            # Get stored colors and extract user text (without suffix)
+            stored_colors2 = (st.session_state.order_data['decoration']['design2_colors'] or "").strip()
+            if stored_colors2 == suffix2:
+                user_text2 = ""
+            elif stored_colors2.endswith("\n" + suffix2):
+                user_text2 = stored_colors2[:-len("\n" + suffix2)].strip()
+            elif stored_colors2.endswith(suffix2):
+                user_text2 = stored_colors2[:-len(suffix2)].strip()
+            else:
+                user_text2 = stored_colors2
+            
+            # Compute display value: checked = show suffix, unchecked = no suffix
+            if current_checkbox_state2:
+                display_value2 = (user_text2 + "\n" + suffix2).strip() if user_text2 else suffix2
+            else:
+                display_value2 = user_text2
+            
+            # Render text_area with computed value
             design2_colors = st.text_area(
                 "Requested Colors",
-                value=st.session_state.order_data['decoration']['design2_colors'],
-                key=f'design2_colors_{st.session_state.order_data["decoration"]["design2_let_designers_pick"]}',
+                value=display_value2,
+                key=f'design2_colors_{current_checkbox_state2}',
                 height=60
             )
 
+            # Render checkbox
             design2_let_designers_pick = st.checkbox(
                 "Let Designers Pick",
-                value=st.session_state.order_data['decoration']['design2_let_designers_pick'],
+                value=current_checkbox_state2,
                 key='design2_let_designers_pick_checkbox'
             )
-            st.session_state.order_data['decoration']['design2_let_designers_pick'] = design2_let_designers_pick
-
-            suffix2 = "Let designers pick"
-            current2 = (design2_colors or "").strip()
-            if current2 == suffix2:
-                user_part2 = ""
-            elif current2.endswith("\n" + suffix2):
-                user_part2 = current2[:-len("\n" + suffix2)].strip()
-            elif current2.endswith(suffix2):
-                user_part2 = current2[:-len(suffix2)].strip()
+            
+            # Extract user text from current input (strip suffix if present)
+            current_input2 = (design2_colors or "").strip()
+            if current_input2 == suffix2:
+                final_user_text2 = ""
+            elif current_input2.endswith("\n" + suffix2):
+                final_user_text2 = current_input2[:-len("\n" + suffix2)].strip()
+            elif current_input2.endswith(suffix2):
+                final_user_text2 = current_input2[:-len(suffix2)].strip()
             else:
-                user_part2 = current2
+                final_user_text2 = current_input2
+            
+            # Save to order_data: checked = with suffix, unchecked = without
             if design2_let_designers_pick:
-                st.session_state.order_data['decoration']['design2_colors'] = (user_part2 + "\n" + suffix2).strip() if user_part2 else suffix2
+                st.session_state.order_data['decoration']['design2_colors'] = (final_user_text2 + "\n" + suffix2).strip() if final_user_text2 else suffix2
             else:
-                st.session_state.order_data['decoration']['design2_colors'] = user_part2
+                st.session_state.order_data['decoration']['design2_colors'] = final_user_text2
+            st.session_state.order_data['decoration']['design2_let_designers_pick'] = design2_let_designers_pick
             design2_premium_4color = st.checkbox(
                 "Premium 4-Color (+$2.00/pc)",
                 value=st.session_state.order_data['decoration']['design2_premium_4color'],
