@@ -1253,39 +1253,79 @@ with col_rep:
     st.session_state.order_data['header']['sales_rep'] = authenticated_rep_name
 
 with col_cust:
-    # Customer Dropdown (filtered by authenticated Sales Rep)
-    # Use container to stabilize layout
-    customer_container = st.container()
-    with customer_container:
-        # Always use authenticated rep for customer filtering
-        available_customers = get_customers_for_rep(authenticated_rep_name)
-        
+    # Customer selection with option to enter new
+    # Initialize customer_mode in session state if not present
+    if 'customer_mode' not in st.session_state:
+        st.session_state.customer_mode = 'select'
+    
+    available_customers = get_customers_for_rep(authenticated_rep_name)
+    
+    # Toggle between select and enter new
+    col_mode1, col_mode2 = st.columns(2)
+    with col_mode1:
+        if st.button("Select from list", key='customer_mode_select', 
+                     type="primary" if st.session_state.customer_mode == 'select' else "secondary",
+                     use_container_width=True):
+            st.session_state.customer_mode = 'select'
+            st.rerun()
+    with col_mode2:
+        if st.button("Enter new", key='customer_mode_new',
+                     type="primary" if st.session_state.customer_mode == 'new' else "secondary",
+                     use_container_width=True):
+            st.session_state.customer_mode = 'new'
+            # Clear address when switching to new customer mode
+            st.session_state.order_data['header']['shipping_address1'] = ''
+            st.session_state.order_data['header']['shipping_address2'] = ''
+            st.session_state.order_data['header']['shipping_city'] = ''
+            st.session_state.order_data['header']['shipping_state'] = ''
+            st.session_state.order_data['header']['shipping_zip'] = ''
+            st.session_state.order_data['header']['customer'] = None
+            st.rerun()
+    
+    if st.session_state.customer_mode == 'select':
+        # Dropdown mode
         if available_customers:
+            current_customer = st.session_state.order_data['header'].get('customer')
+            if current_customer and current_customer in available_customers:
+                default_idx = available_customers.index(current_customer) + 1
+            else:
+                default_idx = 0
+            
             selected_customer = st.selectbox(
                 "Customer",
                 options=[''] + available_customers,
-                index=0 if st.session_state.order_data['header']['customer'] is None else (available_customers.index(st.session_state.order_data['header']['customer']) + 1 if st.session_state.order_data['header']['customer'] in available_customers else 0),
+                index=default_idx,
                 key='customer_select'
             )
+            
+            # Auto-fill address when customer is selected
+            if selected_customer:
+                prev_customer = st.session_state.order_data['header'].get('customer')
+                if selected_customer != prev_customer:
+                    # Customer changed, update address
+                    addr1, addr2, city, state, zip_code = get_customer_address(selected_customer)
+                    st.session_state.order_data['header']['shipping_address1'] = addr1
+                    st.session_state.order_data['header']['shipping_address2'] = addr2
+                    st.session_state.order_data['header']['shipping_city'] = city
+                    st.session_state.order_data['header']['shipping_state'] = state
+                    st.session_state.order_data['header']['shipping_zip'] = zip_code
+                st.session_state.order_data['header']['customer'] = selected_customer
+            else:
+                st.session_state.order_data['header']['customer'] = None
         else:
-            selected_customer = None
-            # Use placeholder to maintain layout height
-            st.selectbox("Customer", options=[''], disabled=True, key='customer_select_empty')
-    
-    # Auto-fill address when customer is selected
-    if selected_customer:
-        prev_customer = st.session_state.order_data['header'].get('customer')
-        if selected_customer != prev_customer:
-            # Customer changed, update address
-            addr1, addr2, city, state, zip_code = get_customer_address(selected_customer)
-            st.session_state.order_data['header']['shipping_address1'] = addr1
-            st.session_state.order_data['header']['shipping_address2'] = addr2
-            st.session_state.order_data['header']['shipping_city'] = city
-            st.session_state.order_data['header']['shipping_state'] = state
-            st.session_state.order_data['header']['shipping_zip'] = zip_code
-        st.session_state.order_data['header']['customer'] = selected_customer
+            st.info("No customers found for this rep. Use 'Enter new' to add a customer.")
+            st.session_state.order_data['header']['customer'] = None
     else:
-        st.session_state.order_data['header']['customer'] = None
+        # Text input mode for new customer
+        new_customer_name = st.text_input(
+            "Customer Name",
+            value=st.session_state.order_data['header'].get('customer') or '',
+            key='customer_new_input',
+            placeholder="Enter customer name"
+        )
+        st.session_state.order_data['header']['customer'] = new_customer_name if new_customer_name else None
+        if new_customer_name:
+            st.caption("📝 New customer - address fields below will be blank")
 
 # Row 1: Order Date, Ship Date, Drop Dead Date
 col_date1, col_date2, col_date3 = st.columns(3)
