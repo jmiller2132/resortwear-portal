@@ -16,35 +16,8 @@ st.set_page_config(
     layout="wide"
 )
 
-# Browser warning when leaving page with unsaved data
+# For JavaScript injection (auto-download)
 import streamlit.components.v1 as components
-
-def inject_beforeunload_warning(has_content):
-    """Inject JavaScript to warn user before leaving page if there's unsaved data."""
-    if has_content:
-        components.html(
-            """
-            <script>
-            window.onbeforeunload = function(e) {
-                e.preventDefault();
-                e.returnValue = '';
-                return '';
-            };
-            </script>
-            """,
-            height=0
-        )
-    else:
-        # Clear the warning if no content
-        components.html(
-            """
-            <script>
-            window.onbeforeunload = null;
-            </script>
-            """,
-            height=0
-        )
-
 import base64
 
 def trigger_auto_download(file_bytes, filename, mime_type):
@@ -1136,9 +1109,6 @@ with col_nav:
         st.markdown(f"📊 [View/Edit Data Sheets]({SHEETS_LINK})")
 
 st.markdown("---")
-
-# Inject browser warning if there's unsaved data
-inject_beforeunload_warning(order_data_has_content(st.session_state.order_data))
 
 # "New Order" confirmation when form has content
 if st.session_state.view_mode == 'new_order' and st.session_state.pending_clear_new_order:
