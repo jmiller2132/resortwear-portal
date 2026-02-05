@@ -16,6 +16,35 @@ st.set_page_config(
     layout="wide"
 )
 
+# Browser warning when leaving page with unsaved data
+import streamlit.components.v1 as components
+
+def inject_beforeunload_warning(has_content):
+    """Inject JavaScript to warn user before leaving page if there's unsaved data."""
+    if has_content:
+        components.html(
+            """
+            <script>
+            window.onbeforeunload = function(e) {
+                e.preventDefault();
+                e.returnValue = '';
+                return '';
+            };
+            </script>
+            """,
+            height=0
+        )
+    else:
+        # Clear the warning if no content
+        components.html(
+            """
+            <script>
+            window.onbeforeunload = null;
+            </script>
+            """,
+            height=0
+        )
+
 # Initialize session state
 if 'order_data' not in st.session_state:
     st.session_state.order_data = {
@@ -492,58 +521,6 @@ def save_order_to_sheet(order_data, status='Draft', submission_number=''):
     st.session_state.saved_orders.append(order_record)
     return order_record['OrderID']
 
-def get_orders_for_rep(rep_name, status_filter=None):
-    """Get orders for a specific rep from saved orders"""
-    if 'saved_orders' not in st.session_state:
-        return []
-    
-    rep_clean = str(rep_name).strip()
-    orders = [o for o in st.session_state.saved_orders if str(o.get('SalesRep', '')).strip() == rep_clean]
-    
-    if status_filter:
-        orders = [o for o in orders if o.get('Status', '') == status_filter]
-    
-    # Sort by created date (newest first)
-    orders.sort(key=lambda x: x.get('CreatedDate', ''), reverse=True)
-    return orders
-
-def load_order_by_id(order_id):
-    """Load order data by OrderID and restore date objects"""
-    if 'saved_orders' not in st.session_state:
-        return None
-    
-    for order in st.session_state.saved_orders:
-        if order.get('OrderID') == order_id:
-            try:
-                # Parse order data from JSON string
-                order_data = json.loads(order.get('OrderData', '{}'))
-                
-                # Restore date objects from ISO format strings
-                if 'header' in order_data:
-                    for date_field in ['order_date', 'ship_date', 'drop_dead_date']:
-                        if date_field in order_data['header'] and order_data['header'][date_field]:
-                            date_str = order_data['header'][date_field]
-                            try:
-                                # Try parsing ISO format date string
-                                if isinstance(date_str, str):
-                                    if 'T' in date_str:
-                                        order_data['header'][date_field] = datetime.fromisoformat(date_str.split('T')[0]).date()
-                                    else:
-                                        order_data['header'][date_field] = datetime.strptime(date_str, '%Y-%m-%d').date()
-                            except (ValueError, AttributeError):
-                                pass
-                
-                return {
-                    'order_record': order,
-                    'order_data': order_data
-                }
-            except Exception as e:
-                return {
-                    'order_record': order,
-                    'order_data': None
-                }
-    
-    return None
 
 def get_empty_order_data():
     """Return a fresh order_data structure (sales_rep from authenticated rep)."""
@@ -1124,19 +1101,15 @@ with col_nav:
                     del st.session_state[k]
         st.rerun()
     
-    if st.button("📋 My Orders", key='nav_my_orders', use_container_width=True):
-        st.session_state.view_mode = 'my_orders'
-        st.session_state.show_order_review = False
-        st.session_state.order_submitted = False
-        st.session_state.pending_clear_new_order = False
-        st.rerun()
-    
     # Conditionally show Google Sheets link based on rep permissions
     if authenticated_rep_name and can_rep_view_sheets(authenticated_rep_name):
         SHEETS_LINK = "https://docs.google.com/spreadsheets/d/14DYELQWKuQefjFEpTaltaS5YHhXeiIhr-QJ327mGwt0/edit?usp=sharing"
         st.markdown(f"📊 [View/Edit Data Sheets]({SHEETS_LINK})")
 
 st.markdown("---")
+
+# Inject browser warning if there's unsaved data
+inject_beforeunload_warning(order_data_has_content(st.session_state.order_data))
 
 # "New Order" confirmation when form has content
 if st.session_state.view_mode == 'new_order' and st.session_state.pending_clear_new_order:
@@ -1160,196 +1133,12 @@ if st.session_state.view_mode == 'new_order' and st.session_state.pending_clear_
             st.rerun()
     st.stop()
 
-# My Orders View
-if st.session_state.view_mode == 'my_orders':
-    st.header("📋 My Orders")
-    
-    # Get orders for this rep
-    all_orders = get_orders_for_rep(authenticated_rep_name)
-    submitted_orders = [o for o in all_orders if o.get('Status') == 'Submitted']
-    draft_orders = [o for o in all_orders if o.get('Status') == 'Draft']
-    
-    # Tabs for Submitted and Drafts
-    tab1, tab2 = st.tabs([f"✅ Submitted ({len(submitted_orders)})", f"💾 Drafts ({len(draft_orders)})"])
-    
-    with tab1:
-        if submitted_orders:
-            st.markdown("### Submitted Orders")
-            for order in submitted_orders:
-                with st.container():
-                    col1, col2, col3 = st.columns([3, 2, 1])
-                    with col1:
-                        st.write(f"**PO#:** {order.get('PONumber', 'N/A')} | **Customer:** {order.get('Customer', 'N/A')}")
-                        st.write(f"**Submission #:** {order.get('SubmissionNumber', 'N/A')} | **Order Date:** {order.get('OrderDate', 'N/A')}")
-                    with col2:
-                        st.write(f"**Created:** {order.get('CreatedDate', 'N/A')}")
-                    with col3:
-                        if st.button("👁️ View", key=f"view_submitted_{order.get('OrderID')}"):
-                            st.session_state.viewing_order_id = order.get('OrderID')
-                            st.session_state.view_mode = 'view_order'
-                            st.rerun()
-                    st.markdown("---")
-        else:
-            st.info("No submitted orders yet.")
-    
-    with tab2:
-        if draft_orders:
-            st.markdown("### Draft Orders")
-            for order in draft_orders:
-                with st.container():
-                    col1, col2, col3 = st.columns([3, 2, 1])
-                    with col1:
-                        po_num = order.get('PONumber', 'N/A')
-                        if po_num == '' or po_num == 'N/A':
-                            po_num = 'No PO#'
-                        st.write(f"**PO#:** {po_num} | **Customer:** {order.get('Customer', 'N/A')}")
-                        st.write(f"**Created:** {order.get('CreatedDate', 'N/A')}")
-                    with col2:
-                        st.write(f"**Last Saved:** {order.get('CreatedDate', 'N/A')}")
-                    with col3:
-                        if st.button("✏️ Edit", key=f"edit_draft_{order.get('OrderID')}"):
-                            st.session_state.viewing_order_id = order.get('OrderID')
-                            st.session_state.view_mode = 'edit_order'
-                            st.rerun()
-                    st.markdown("---")
-        else:
-            st.info("No draft orders saved.")
-    
-    st.markdown("---")
-    if st.button("← Back to New Order", key='back_to_new'):
-        st.session_state.view_mode = 'new_order'
-        st.rerun()
-    
-    st.stop()  # Stop here - don't show the order form
-
-# View/Edit Order Mode
-if st.session_state.view_mode in ['view_order', 'edit_order']:
-    viewing_order_id = st.session_state.get('viewing_order_id')
-    if viewing_order_id:
-        loaded_order = load_order_by_id(viewing_order_id)
-        if loaded_order and loaded_order.get('order_record'):
-            order_record = loaded_order['order_record']
-            order_data = loaded_order.get('order_data')
-            
-            st.header(f"{'👁️ View Order' if st.session_state.view_mode == 'view_order' else '✏️ Edit Order'}")
-            st.write(f"**PO#:** {order_record.get('PONumber', 'N/A')} | **Customer:** {order_record.get('Customer', 'N/A')}")
-            st.write(f"**Status:** {order_record.get('Status', 'N/A')} | **Submission #:** {order_record.get('SubmissionNumber', 'N/A')}")
-            st.write(f"**Created:** {order_record.get('CreatedDate', 'N/A')}")
-            
-            if order_data and st.session_state.view_mode == 'edit_order':
-                # Load order data into session state for editing
-                # Restore date objects from ISO format strings
-                if 'header' in order_data:
-                    for date_field in ['order_date', 'ship_date', 'drop_dead_date']:
-                        if date_field in order_data['header'] and order_data['header'][date_field]:
-                            date_val = order_data['header'][date_field]
-                            if isinstance(date_val, str):
-                                try:
-                                    if 'T' in date_val:
-                                        order_data['header'][date_field] = datetime.fromisoformat(date_val.split('T')[0]).date()
-                                    else:
-                                        order_data['header'][date_field] = datetime.strptime(date_val, '%Y-%m-%d').date()
-                                except (ValueError, AttributeError):
-                                    pass
-                
-                st.session_state.order_data = order_data
-                st.success("✅ Order loaded. You can now edit it below.")
-                st.session_state.view_mode = 'new_order'
-                if 'viewing_order_id' in st.session_state:
-                    del st.session_state.viewing_order_id
-                st.rerun()
-            elif order_data and st.session_state.view_mode == 'view_order':
-                # Display order in read-only view (similar to review screen)
-                st.markdown("---")
-                with st.expander("📦 Order Information", expanded=True):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write(f"**Sales Rep:** {order_data['header'].get('sales_rep', 'N/A')}")
-                        st.write(f"**Customer:** {order_data['header'].get('customer', 'N/A')}")
-                        st.write(f"**PO#:** {order_data['header'].get('po_number', 'N/A')}")
-                        st.write(f"**Tax Status:** {order_data['header'].get('tax_status', 'N/A')}")
-                        st.write(f"**Tags:** {order_data['header'].get('tags', 'N/A')}")
-                        st.write(f"**Delivery Method:** {order_data['header'].get('delivery_method', 'N/A')}")
-                    with col2:
-                        order_date = order_data['header'].get('order_date')
-                        ship_date = order_data['header'].get('ship_date')
-                        drop_dead_date = order_data['header'].get('drop_dead_date')
-                        st.write(f"**Order Date:** {order_date if order_date else 'N/A'}")
-                        st.write(f"**Ship Date:** {ship_date if ship_date else 'N/A'}")
-                        st.write(f"**Drop Dead Date:** {drop_dead_date if drop_dead_date else 'N/A'}")
-                
-                with st.expander("📍 Shipping Address"):
-                    st.write(f"**Address 1:** {order_data['header'].get('shipping_address1', 'N/A')}")
-                    addr2 = order_data['header'].get('shipping_address2', '')
-                    if addr2:
-                        st.write(f"**Address 2:** {addr2}")
-                    st.write(f"**City:** {order_data['header'].get('shipping_city', 'N/A')}")
-                    st.write(f"**State:** {order_data['header'].get('shipping_state', 'N/A')}")
-                    st.write(f"**Zip:** {order_data['header'].get('shipping_zip', 'N/A')}")
-                
-                with st.expander("🎨 Design Information"):
-                    design_type = order_data['decoration'].get('design_type', 'New Design')
-                    st.write(f"**Design Type:** {design_type}")
-                    if design_type == 'New Design':
-                        st.write(f"**Decoration Method:** {order_data['decoration'].get('method', 'N/A')}")
-                        st.write(f"**Design 1 Number:** {order_data['decoration'].get('design1_number', 'N/A')}")
-                        st.write(f"**Design 1 Details:** {order_data['decoration'].get('design1_description', 'N/A')}")
-                
-                with st.expander("👕 Products"):
-                    grid = order_data.get('grid', [])
-                    if grid:
-                        product_summary = []
-                        for row in grid:
-                            sku = row.get('SKU', '').strip()
-                            if sku:
-                                qty_total = sum([
-                                    int(float(row.get(size, 0) or 0)) 
-                                    for size in ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL']
-                                ])
-                                if qty_total > 0:
-                                    sizes_list = []
-                                    for size in ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL']:
-                                        qty = int(float(row.get(size, 0) or 0))
-                                        if qty > 0:
-                                            sizes_list.append(f"{size}: {qty}")
-                                    product_summary.append({
-                                        'SKU': sku,
-                                        'Brand': row.get('Brand', ''),
-                                        'Description': row.get('Description', ''),
-                                        'Color': row.get('Color', ''),
-                                        'Sizes': ', '.join(sizes_list),
-                                        'Total Qty': qty_total
-                                    })
-                        if product_summary:
-                            df_products = pd.DataFrame(product_summary)
-                            st.dataframe(df_products, use_container_width=True, hide_index=True)
-            
-            if st.button("← Back to My Orders", key='back_to_orders'):
-                st.session_state.view_mode = 'my_orders'
-                if 'viewing_order_id' in st.session_state:
-                    del st.session_state.viewing_order_id
-                st.rerun()
-            
-            st.stop()
-        else:
-            st.error("Order not found.")
-            st.session_state.view_mode = 'my_orders'
-            st.rerun()
-
-# Save Draft button (always visible when in new order mode)
-if st.session_state.view_mode == 'new_order' and not st.session_state.show_order_review and not st.session_state.order_submitted:
-    col_save, col_spacer = st.columns([1, 5])
-    with col_save:
-        if st.button("💾 Save Draft", key='save_draft'):
-            # Save current order as draft
-            import json
-            order_data_copy = json.loads(json.dumps(st.session_state.order_data, default=str))
-            order_id = save_order_to_sheet(order_data_copy, status='Draft')
-            st.success(f"✅ Draft saved! (ID: {order_id})")
-            st.info("💡 You can access your drafts from the 'My Orders' section.")
 
 # ORDER SECTION
 st.header("Order")
+
+# Info notice about data persistence
+st.info("⚠️ **Important:** Your order data is not saved automatically. Please complete and submit your order in one session. If you close this tab or navigate away, your entered data will be lost.")
 
 # Sales Rep and Customer (side by side)
 col_rep, col_cust = st.columns(2)
