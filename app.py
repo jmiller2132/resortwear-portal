@@ -1226,18 +1226,18 @@ with col_cust:
     # Customer dropdown with option to enter new at the end
     available_customers = get_customers_for_rep(authenticated_rep_name)
     
-    # Build options: existing customers + "-- Enter New Customer --" at the end
+    # Build options: "-- Enter New Customer --" at top, then existing customers
     NEW_CUSTOMER_OPTION = "-- Enter New Customer --"
-    customer_options = [''] + available_customers + [NEW_CUSTOMER_OPTION]
+    customer_options = ['', NEW_CUSTOMER_OPTION] + available_customers
     
     # Determine current selection index
     current_customer = st.session_state.order_data['header'].get('customer')
     is_new_customer = st.session_state.get('is_new_customer', False)
     
     if is_new_customer:
-        default_idx = len(customer_options) - 1  # "-- Enter New Customer --"
+        default_idx = 1  # "-- Enter New Customer --" is at index 1
     elif current_customer and current_customer in available_customers:
-        default_idx = available_customers.index(current_customer) + 1
+        default_idx = available_customers.index(current_customer) + 2  # +2 for empty and NEW option
     else:
         default_idx = 0
     
